@@ -3,10 +3,13 @@
     python -m scripts.seed                # regenerate CSVs, reset DB, load, compute forecasts
     python -m scripts.seed --no-forecast  # skip forecasts (fallback is computed on the fly)
 
-Story (as-of 2026-10-13, 30-day horizon, INR 50,000 budget):
+Scale: a mid-size / enterprise D2C + marketplace brand: 30 SKUs selling ~6,000 units a day, INR 10 lakh
+(1,000,000) monthly rescue budget. Unit economics are real-world INR prices; volumes are SCALE x a small-brand base.
+
+Story (as-of 2026-10-13, 30-day horizon, INR 10 lakh budget):
   * QuickPack Organics (SUP-04) is unreliable; open POs PO-2041/PO-2042 will actually arrive 9 days late.
   * A fitness creator features Peanut Butter Crunchy 1kg (SKU-019): ~2.8x demand Oct 15-24.
-  * Cold Brew Coffee lot LOT-013-A (420 units) expires Oct 25, far above expected sell-through.
+  * Cold Brew Coffee lot LOT-013-A (8,400 units) expires Oct 25, far above expected sell-through.
   * Amazon suppresses the Kombucha Ginger Lemon listing (SKU-014): ~0.7x demand Oct 14-23.
   * NutriSource PO-2044 (Omega-3, SKU-026) is held at customs and actually arrives 6 days late.
 
@@ -41,6 +44,11 @@ START = LAST_SALE - timedelta(days=HISTORY_DAYS - 1)
 DOW = [0.92, 0.9, 0.95, 1.0, 1.05, 1.15, 1.1]
 CHANNELS = [("D2C website", 0.35), ("Amazon", 0.30), ("Quick-commerce", 0.25), ("Retail", 0.10)]
 SEGMENTS = [("new", 0.30), ("repeat", 0.55), ("subscription", 0.15)]
+# Volume multiplier on the small-brand base demand, MOQs and the explicit lots below.
+SCALE = 20
+# Day-level demand noise (lognormal sigma on top of Poisson): at enterprise volumes Poisson noise alone is too
+# smooth, real SKU-day demand still swings ~25-30%.
+DAY_NOISE = 0.25
 
 SUPPLIERS = [
     # id, name, stated LT, expedite LT, premium, terms, delay probs (on-time p, delay choices, weights), fill range
@@ -55,6 +63,7 @@ SUPPLIERS = [
 ]
 
 # sku, name, category, supplier, cost, price, case_pack, moq, shelf_life, base daily demand, 120d trend multiplier
+# (moq and base demand are small-brand values, multiplied by SCALE right below the list)
 PRODUCTS = [
     ("SKU-001", "Whey Protein Chocolate 1kg", "Protein", "SUP-01", 1150, 1899, 4, 8, 365, 3.5, 1.05),
     ("SKU-002", "Whey Protein Vanilla 1kg", "Protein", "SUP-01", 1150, 1899, 4, 8, 365, 2.2, 1.0),
@@ -87,6 +96,7 @@ PRODUCTS = [
     ("SKU-029", "Apple Cider Vinegar Gummies 60", "Supplements", "SUP-01", 190, 449, 20, 20, 365, 5.0, 1.1),
     ("SKU-030", "Biotin Gummies 60", "Supplements", "SUP-01", 170, 399, 20, 20, 365, 3.5, 1.0),
 ]
+PRODUCTS = [p[:7] + (p[7] * SCALE,) + p[8:9] + (p[9] * SCALE,) + p[10:] for p in PRODUCTS]
 
 # Starting position: days of cover on hand; optional open PO (days of demand, expected in N days, PO id).
 COVER = {
@@ -104,9 +114,9 @@ OPEN_POS = {
 }
 # Explicit lots (qty, days to expiry) for the expiry stories.
 SPECIAL_LOTS = {
-    "SKU-013": [("LOT-013-A", 420, 12), ("LOT-013-B", 200, 50)],
-    "SKU-014": [("LOT-014-A", 130, 8), ("LOT-014-B", 100, 38)],
-    "SKU-006": [("LOT-006-A", 150, 15), ("LOT-006-B", 70, 100)],
+    "SKU-013": [("LOT-013-A", 420 * SCALE, 12), ("LOT-013-B", 200 * SCALE, 50)],
+    "SKU-014": [("LOT-014-A", 130 * SCALE, 8), ("LOT-014-B", 100 * SCALE, 38)],
+    "SKU-006": [("LOT-006-A", 150 * SCALE, 15), ("LOT-006-B", 70 * SCALE, 100)],
 }
 # "Actual" outcome truth used only by the evaluation world (never shown to the planner).
 TRUTH_PO_DELAYS = {"PO-2041": 9, "PO-2042": 9, "PO-2044": 6}
@@ -220,7 +230,7 @@ def generate(out: Path = SEED_DIR) -> None:
     for i in range(HISTORY_DAYS):
         day = START + timedelta(days=i)
         for p in PRODUCTS:
-            units = int(rng.poisson(lam(p, ctx, day) * rng.lognormal(0, 0.12)))
+            units = int(rng.poisson(lam(p, ctx, day) * rng.lognormal(0, DAY_NOISE)))
             if units == 0:
                 continue
             ch = rng.multinomial(units, [w for _, w in CHANNELS])
@@ -244,7 +254,7 @@ def generate(out: Path = SEED_DIR) -> None:
                 if p[0] == sku and start <= day <= end:
                     x *= mult
             ev.append({"sku_id": p[0], "demand_date": day.isoformat(),
-                       "units": int(rng.poisson(x * rng.lognormal(0, 0.12)))})
+                       "units": int(rng.poisson(x * rng.lognormal(0, DAY_NOISE)))})
     write("evaluation_demand.csv", ev)
 
     lots, pos = [], []

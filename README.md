@@ -8,6 +8,14 @@ The AI Builder Cup presentation is in
 > All values are simulated on a seeded, synthetic dataset with known "truth" demand. They are not
 > measured business results.
 
+**Who it is for.** Mid-size and large D2C / FMCG brands, where a month's stock-outs, write-offs and rush orders
+run into lakhs of rupees. The demo brand sells 30 SKUs through D2C, Amazon, quick-commerce and retail: about
+5,500 units a day, ₹4.3 crore of revenue a month, ₹2.5 crore of stock at cost, and a ₹10 lakh monthly rescue budget.
+At that size the simulated savings (₹1.7–4.1 lakh a month, see Results) are 12–40× the cost of running the tool
+on Google Cloud (about ₹10.5–14k a month for a dedicated deployment). For a small brand with a ₹50k budget the
+same deployment would cost about as much as it saves, so small brands are better served by a shared, multi-tenant
+deployment.
+
 ## What it does
 
 | Area | Details |
@@ -25,45 +33,47 @@ The AI Builder Cup presentation is in
 | Overrides and plan diff | The operator can change quantities or discounts, or skip any line, on a draft plan. Edited plans are re-scored with the same simulator and stay within budget; the robustness job re-runs. Each new plan lists what changed vs the previous one and why. |
 | Explanation | The LLM writes a plan narrative that may only use numbers, dates and IDs present in the plan JSON. It gets one corrective retry; after that, a deterministic template is used. |
 | Planning assistant | `#/assistant`: ask questions in plain language ("Why are we not expediting SKU-015?", "What if SUP-04 slips a week?"). The model answers by calling ten read-only tools over the planner and simulator, and every number in its answer is checked against those tool results. |
-| Scenarios | A free-text "what if" (for example "SUP-04 delays 7 more days" or "budget is cut to 30k") is parsed into a validated spec. The response shows the current plan next to an adapted plan. |
+| Scenarios | A free-text "what if" (for example "SUP-04 delays 7 more days" or "budget is cut to 6 lakh") is parsed into a validated spec. The response shows the current plan next to an adapted plan. |
 | Backtest | Rolling-origin forecast backtest: three origins, a 14-day horizon, the top 10 SKUs plus every SKU with a context event in a hold-out window (25 SKUs). It reports pooled WAPE and p10–p90 coverage for seasonal naive, naive + events, statistical and hybrid, overall and on the text-only series. |
 | Approve & export | Approve a plan, then download PO, markdown and action CSVs. Analytics tables can also be exported. |
 
 Every LLM call is logged (`/api/llm/calls`) with a status of `ok`, `ok_repaired`, `invalid`, `error` or `unavailable`. The UI shows a badge for whether each output came from a **validated model** or a **labelled fallback**.
 
-## Results on the synthetic dataset (₹50,000 budget)
+## Results on the synthetic dataset (₹10 lakh budget)
 
-All values are simulated, not measured business results. They come from a fresh seed (`scripts.seed`, all 30 forecasts hybrid, live model `gpt-5.4-mini`) and a plan generated in the UI.
+All values are simulated, not measured business results. They come from a fresh seed (`scripts.seed`, all 30 forecasts hybrid, live model `gpt-5.4-mini`) and a plan generated in the UI. "L" is lakh (₹1,00,000).
 
 | Measure | Plan | Tuned rule | Static rule |
 |---|---|---|---|
-| Expected 30-day loss, evaluation world | ₹126.5k | ₹135.2k | ₹147.9k |
-| Mean loss over 120 Monte Carlo worlds | ₹135.0k | ₹144.1k | ₹154.5k |
-| Savings vs this baseline (mean, p5–p95) | – | ₹9.2k (₹4.4k–₹16.7k), wins in 100% of worlds | ₹19.6k (₹13.1k–₹26.1k), wins in 100% of worlds |
-| Fill rate / hero fill rate | 0.913 / 0.766 | 0.896 / 0.792 | 0.897 / 0.792 |
+| Expected 30-day loss, evaluation world | ₹26.44L | ₹28.15L | ₹30.59L |
+| Mean loss over 120 Monte Carlo worlds | ₹28.03L | ₹29.98L | ₹31.91L |
+| Savings vs this baseline (mean, p5–p95) | – | ₹1.94L (₹1.28L–₹2.98L), wins in 100% of worlds | ₹3.88L (₹2.45L–₹5.48L), wins in 100% of worlds |
+| Fill rate / hero fill rate | 0.902 / 0.803 | 0.888 / 0.752 | 0.886 / 0.752 |
+
+The loss is large next to the budget on purpose: ₹10 lakh cannot fix every SKU at risk, so the planner has to choose. Plan generation takes about 9 s and the robustness job about 10 s on a laptop.
 
 Budget frontier (evaluation world):
 
-| Budget | ₹0 | ₹12.5k | ₹25k | ₹37.5k | ₹50k | ₹75k | ₹100k |
+| Budget | ₹0 | ₹2.5L | ₹5L | ₹7.5L | ₹10L | ₹15L | ₹20L |
 |---|---|---|---|---|---|---|---|
-| Loss | ₹186.5k | ₹170.8k | ₹153.5k | ₹141.0k | ₹126.5k | ₹103.1k | ₹83.2k |
-| Fill rate | 0.831 | 0.840 | 0.888 | 0.889 | 0.913 | 0.937 | 0.962 |
+| Loss | ₹38.88L | ₹35.45L | ₹32.07L | ₹29.16L | ₹26.44L | ₹21.59L | ₹17.99L |
+| Fill rate | 0.819 | 0.826 | 0.839 | 0.877 | 0.902 | 0.924 | 0.943 |
 
 ### Plan options: when to spend the budget
 
-Spending everything on day 0 leaves nothing for the weekly reviews: with commit-now, weekly re-planning gains ₹0 over plan-once. The plan-options card compares four uses of the same ₹50k. Each option is followed by weekly re-planning (days 0/7/14/21). "Calm" futures are 10 Monte Carlo worlds; "shock" futures add mid-month demand shifts (×0.5–1.8) on about 30% of SKUs and a 4–8 day slip at one supplier. Comparisons are paired: every option sees the same futures.
+Spending everything on day 0 leaves nothing for the weekly reviews: with commit-now, weekly re-planning gains ₹0 over plan-once. The plan-options card compares four uses of the same ₹10 lakh. Each option is followed by weekly re-planning (days 0/7/14/21). "Calm" futures are 10 Monte Carlo worlds; "shock" futures add mid-month demand shifts (×0.5–1.8) on about 30% of SKUs and a 4–8 day slip at one supplier. Comparisons are paired: every option sees the same futures.
 
 | Option | Paid on day 0 | Loss, actual world | Calm: vs commit now (win rate) | Shocks: vs commit now (win rate) | Hero fill, actual |
 |---|---|---|---|---|---|
-| Commit now | ₹50.0k | ₹126.5k | – | – | 0.766 |
-| Staggered buys (4 split) | ₹27.1k | ₹122.9k | ₹1.3k better (80%) | ₹0.4k better (70%) | 0.792 |
-| Keep a reserve (30%) | ₹35.0k | ₹122.2k | ₹4.1k better (100%) | ₹3.2k better (90%) | 0.766 |
-| Lean (₹45k) | ₹44.9k | ₹132.3k | ₹5.8k worse (0%) | ₹5.1k worse (0%) | 0.766 |
+| Commit now | ₹9.99L | ₹26.44L | – | – | 0.803 |
+| Staggered buys (3 split) | ₹6.54L | ₹26.78L | ₹0.37L worse (50%) | ₹0.55L worse (40%) | 0.823 |
+| Keep a reserve (30%) | ₹7.00L | ₹25.38L | ₹0.98L better (100%) | ₹0.76L better (90%) | 0.854 |
+| Lean (₹9L) | ₹8.99L | ₹27.33L | ₹0.94L worse (0%) | ₹0.81L worse (0%) | 0.803 |
 
 Caveats:
-- **Most of the reserve's gain comes from one forecast miss.** The hero SKU-019 is under-forecast, and the day-7 review buys more once its sales show up. The calm futures are centred on the actual month, so they share that miss; the shock futures are the fairer test, and there the reserve loses in 1 of 10.
-- **Staggered buys halve day-0 cash at the same planning loss** and get the best hero fill rate, but their gain is small and uneven (p5 is ₹5–11k worse). Working-capital cost (18% a year) is reported separately and is not in the loss.
-- Without weekly reviews, holding cash back is never better: the day-0 loss with no later buys is ₹141.7k for the reserve against ₹126.5k for commit now.
+- **Keeping a reserve is the best option here**, and it also gives the best hero fill rate (0.854). Part of its gain comes from the hero SKU-019 being under-forecast: the day-7 review buys more once its sales show up. The calm futures are centred on the actual month, so they share that miss; the shock futures are the fairer test, and there the reserve still wins 9 of 10 (p5 is ₹0.85L worse).
+- **Staggered buys cut day-0 cash by a third (₹6.54L vs ₹9.99L) at the same planning loss** and raise hero fill, but at this scale they lose slightly on average (about 1.5–2% of the loss), because the later tranches are re-planned and partly redirected. They are a cash-flow choice, not a loss reducer. Working-capital cost (18% a year) is reported separately and is not in the loss: ₹12.4k vs ₹14.8k for commit now.
+- Without weekly reviews, holding cash back is never better: the day-0 loss with no later buys is ₹29.51L for the reserve against ₹26.44L for commit now.
 
 ### Measuring the GenAI layer
 
@@ -71,56 +81,63 @@ Forecast backtest (3 origins × 14 days, 25 SKUs, 1,050 points):
 
 | Model | WAPE | p10–p90 coverage |
 |---|---|---|
-| Seasonal naive | 32.0% | 69% |
-| Naive + numeric events | 31.5% | 70% |
-| Statistical | 29.9% | 77% |
-| Hybrid (LLM-tuned events) | **29.1%** | 78% |
-| Statistical, 16 text-only series | 31.5% | 73% |
-| Hybrid, 16 text-only series | **28.8%** | 76% |
+| Seasonal naive | 24.1% | 70% |
+| Naive + numeric events | 23.6% | 70% |
+| Statistical | 23.0% | 75% |
+| Hybrid (LLM-tuned events) | **21.5%** | 76% |
+| Statistical, 15 text-only series | 24.2% | 71% |
+| Hybrid, 15 text-only series | **21.9%** | 75% |
+
+74 of 75 hybrid forecasts passed validation; the hybrid row covers their 1,036 points (the statistical model scores 23.05% on the same points).
 
 Inbox extraction, 40 labelled messages (supplier emails, WhatsApp notes, Hindi/Hinglish, forwarded threads, retractions, vague maybes, unknown products, 14 no-event messages):
 
 | Extractor | Precision | Recall | F1 | False event on no-event messages | Messages fully correct |
 |---|---|---|---|---|---|
-| LLM + validators | 0.97 | 1.00 | **0.98** | 1 in 14 | 97.5% |
+| LLM + validators | 0.94 | 1.00 | **0.97** | 2 in 14 | 95.0% |
 | Keyword baseline | 0.94 | 0.50 | 0.65 | 0 | 57.5% |
 
-Every evidence quote appears verbatim in its message. On the 5 demo messages tied to real events, plans built from the LLM-extracted signals recover 100% of the loss reduction that perfect information gives (₹126.5k → ₹118.4k in the evaluation world; ₹135.2k → ₹128.1k over 40 worlds).
+Every evidence quote appears verbatim in its message.
+
+Value of the signals in a plan: on the 5 demo messages tied to real events, a ₹10 lakh plan built from the LLM-extracted signals cuts the evaluation-world loss from ₹26.61L (no signals) to ₹25.23L, the same as the plan built from hand-labelled (gold) signals: **100% of the perfect-information gain** (₹27.81L → ₹27.25L over 40 worlds, also 100%).
+
+This metric caught a real bug. The first run on the enterprise data captured **−17%**: every model read "from Oct 15 … for about 10 days" as ending on 25 October, while the planner treats end dates as inclusive (24 October). One extra day of 3× demand on the hero SKU-019 made the budget-tight plan put ₹9.98L into that SKU and starve two others. The extraction prompt now states that dates are inclusive (with an unrelated example), which fixed it for all 10 models. It also shows that a small misread can move a lakh, so signals still need human confirmation.
 
 Caveats:
-- **The forecasting gain is modest:** 0.8 pp pooled, 2.7 pp on text-only series. The hybrid is better at every origin but worse on some SKUs (for example SKU-003, 41.2% → 47.0%). The LLM consistently underestimates text-only effects (×1.08–1.18 against true +25–60%) and got the heatwave's effect on tea wrong.
-- **The extraction gold set is small and written by the developers**, and the prompt rules were refined after a first run on the same set (F1 0.94 before, 0.98 after). Treat it as a regression check, not a benchmark.
-- **The plan does not improve hero fill rate** (0.766 against 0.792 for the rules); its savings come from total loss and overall fill. Raising the hero goodwill penalty or pinning SKUs as hero shifts that balance.
+- **The forecasting gain is real but moderate:** 1.5 pp pooled and 2.3 pp on text-only series, measured on 1,050 points of one synthetic brand. Gains of this size need confirming on real sales history.
+- **The extraction gold set is small and written by the developers**, and the prompt was refined after runs on the same set (rules for unknown products, retractions and corrections; then the inclusive-date rule above). Treat it as a regression check, not a benchmark. The date rule cost gpt-5.4-mini one message: it now also invents an event for an unlisted Mango Protein Bar (F1 0.984 → 0.968).
+- **Plans are sensitive to the exact signal values** when the budget is tight (see the date bug above). A human should check dates and magnitudes before confirming; editing a signal in place is not built yet.
 - The rolling simulation feeds back realised demand, not censored sales.
 
 ### Planning assistant
 
-On seven live questions (gpt-5.4-mini), including a follow-up, every answer passed the number check on the first attempt in 3–8 s. Each used 1–4 tool calls: explaining a SKU decision, a 40k hero-first replan, a supplier slip, expiry markdowns, 50k vs 75k, and a supplier email draft.
+On six scripted questions (gpt-5.4-mini), every answer passed the number check, five on the first attempt and one after a single repair, in 4–8 s. They cover explaining a SKU decision, an 8 lakh hero-first replan, a supplier slip, expiry markdowns, 10 lakh vs 15 lakh, and a supplier email draft.
 
 ### Model comparison
 
-The same three evaluations ran on every chat model available on our OpenAI-compatible gateway. Calls that failed under load (timeouts, transient gateway errors) were retried, so the table reflects quality, not network luck. The statistical baseline is 29.8% WAPE overall and 31.5% on the text-only series. Assistant latency is the median per question, measured one model at a time; it includes tool execution (about 1 s).
+The same three evaluations ran on every chat model available on our OpenAI-compatible gateway, on the enterprise dataset (₹10 lakh budget). Calls that failed under load (timeouts, transient gateway errors) were retried, so the table reflects quality, not network luck. Forecast WAPE is shown against the statistical model on the same points; the statistical model alone is 23.0% overall and 23.9% on the 15 text-only series (24.2% on gpt-5.4-mini's points, because one of its text-only forecasts failed validation). Assistant latency is the median per question, measured one model at a time; it includes tool execution.
 
-| Model | Extraction F1 | Messages fully correct | False event on no-event msgs | Forecast WAPE, all / text-only | Assistant: validated (first try) | Assistant latency |
-|---|---|---|---|---|---|---|
-| gpt-5.4-mini (default) | 0.984 | 97.5% | 1 / 14 | 29.1% / 28.7% | 6/6 (6) | **4.0 s** |
-| claudesonnet4.5 | **1.000** | **100%** | 0 | 29.1% / 28.8% | 6/6 (6) | 10.0 s |
-| gpt-5.1 | **1.000** | **100%** | 0 | 29.4% / 29.8% | 6/6 (6) | 7.6 s |
-| gpt-5.2 | 0.983 | 97.5% | 0 | 29.4% / 29.9% | 6/6 (6) | 9.2 s |
-| gpt-5 | 0.983 | 97.5% | 0 | **28.9% / 27.9%** | 6/6 (6) | 31.1 s |
-| gpt-5.3-chat | 0.983 | 97.5% | 0 | **28.9% / 27.9%** | 0/6: gateway rejects tool calls | – |
-| gpt-5.6-luna | 0.983 | 97.5% | 0 | 29.5% / 30.6% | 6/6 (6) | 14.1 s |
-| claudeopus5 | 0.983 | 97.5% | 0 | 29.4% / 29.8% | 6/6 (4) | 11.7 s |
-| claudesonnet4.6 | 0.983 | 97.5% | 0 | 30.6% / 32.9% (worse than statistical) | 6/6 (5) | 7.9 s |
-| qwen3.6-27b | 0.966 | 95.0% | 0 | 29.4% / 30.4% | 6/6 (3) | 18.1 s |
+| Model | Extraction F1 | Messages fully correct | Signal value kept | Forecast WAPE, all / text-only | Hybrid forecasts valid | Assistant: checked (first try) | Assistant latency |
+|---|---|---|---|---|---|---|---|
+| gpt-5.4-mini (default) | 0.968 | 95.0% | 100% | 21.5% / 21.9% | 74/75 | 6/6 (5) | **3.9 s** |
+| claudesonnet4.5 | **1.000** | **100%** | 100% | **20.9%** / **19.0%** | 75/75 | 5/6 (5) | 10.3 s |
+| gpt-5.1 | 0.983 | 97.5% | 100% | **20.9%** / 19.6% | 75/75 | 6/6 (6) | 11.9 s |
+| gpt-5 | 0.983 | 97.5% | 100% | 21.0% / 19.2% | 73/75 | 6/6 (6) | 30.4 s |
+| qwen3.6-27b | 0.966 | 95.0% | 100% | 21.0% / 20.2% | 74/75 | 6/6 (5) | 8.8 s |
+| gpt-5.6-luna | 0.983 | 97.5% | 100% | 21.2% / 20.3% | 75/75 | 6/6 (6) | 14.8 s |
+| claudeopus5 | 0.983 | 97.5% | 100% | 21.3% / 20.2% | 75/75 | 6/6 (4) | 12.3 s |
+| gpt-5.2 | 0.983 | 97.5% | 100% | 21.3% / 21.2% | 75/75 | 6/6 (6) | 8.4 s |
+| gpt-5.3-chat | 0.983 | 97.5% | 100% | 21.5% / 21.6% | 75/75 | 0/6: gateway rejects tool calls | – |
+| claudesonnet4.6 | 0.983 | 97.5% | 100% | 21.6% / 20.1% | 75/75 | 6/6 (5) | 10.3 s |
 
 What this shows:
-- **Extraction is close to saturated on this set.** Every model gets 38–40 of 40 messages right, and the differences are one or two messages. Seven models miss g26 ("cartons close to best-before, count pending"). gpt-5.2, claudeopus5 and claudesonnet4.6 leave the unit count empty, and the validator rejects an expiry event without a number, so this is partly a validator choice. gpt-5, gpt-5.3-chat, gpt-5.6-luna and qwen return no event. qwen also misquotes the Hindi message's evidence. gpt-5.4-mini is the only model that invents an event for a product not in the catalogue.
-- **Forecasting is where models differ.** On text-only series, gpt-5 and gpt-5.3-chat cut WAPE by about 3.5 pp against the statistical model, and gpt-5.4-mini and claudesonnet4.5 by about 2.7 pp. Most others manage 1–2 pp; gpt-5.6-luna under 1 pp. claudesonnet4.6 is worse than the statistical model. Every hybrid passed validation (75/75 forecasts).
-- **Speed:** gpt-5.4-mini is about 2–8× faster than the rest. gpt-5 is the most accurate forecaster but about 8× slower; its uncached batch backtest took about 13 minutes under load against about 1.5 for gpt-5.4-mini.
-- **Gateway quirks:** gpt-5, gpt-5.6-luna and claudeopus5 reject `temperature=0`. The client now drops a rejected parameter and retries; before that, these models fell back on every JSON task. gpt-5.3-chat is routed to a deployment that refuses tool calls on chat completions, so the assistant falls back to its labelled tool summary.
+- **Every model beats the statistical forecast**, by 1.4–2.2 pp overall and 2.3–4.9 pp on text-only series. claudesonnet4.5, gpt-5 and gpt-5.1 are the best forecasters; gpt-5.4-mini is among the weakest on text-only series (2.3 pp).
+- **Extraction is close to saturated on this set.** Every model gets 38–40 of 40 messages right. Most miss g26 ("cartons close to best-before, count pending"), which gives no unit count; the validator rejects an expiry event without a number, so this is partly a validator choice. gpt-5.4-mini is the only model that invents events for products not in the catalogue (2 of 14 no-event messages). qwen also gets the Hindi Diwali-offer message wrong. After the date fix, every model's signals give the same plans as the gold signals.
+- **The assistant works on every model with tool calling.** One claudesonnet4.5 answer fell back to the labelled tool summary.
+- **Speed:** gpt-5.4-mini is 2–8× faster than the rest, which is why it is the default. A split is possible: a fast model for the assistant and extraction, a stronger one for the overnight forecast batch.
+- **Gateway quirks:** gpt-5, gpt-5.6-luna and claudeopus5 reject `temperature=0`; the client drops a rejected parameter and retries. gpt-5.3-chat is routed to a deployment that refuses tool calls on chat completions, so the assistant falls back to its labelled tool summary.
 - **Gemini, the target on Google Cloud, has not been measured yet.** It isn't on this gateway, and the Vertex path is only covered by unit tests. Run the same evaluations on Vertex before the demo.
-- With 40 messages, 75 forecasts and 6 questions, gaps of one or two messages, or under about 0.5 pp WAPE, are within noise. The extraction prompt rules were refined on gpt-5.4-mini's first-run errors.
+- With 40 messages, 75 forecasts and 6 questions, gaps of one or two messages, or under about 0.5 pp WAPE, are within noise.
 
 ## Architecture
 
@@ -252,20 +269,20 @@ Local container check: `docker build -t inventory-rescue . && docker run -p 8080
 
 ## 5-minute demo
 
-1. **Plan**: open `#/plan` and click **Generate plan** (₹50,000 budget). Review:
+1. **Plan**: open `#/plan` and click **Generate plan** (₹10,00,000 budget). Review:
    - savings vs the tuned and static rules, fill rate and hero fill rate;
    - the action table with reasons;
    - the budget frontier.
    
-   The robustness card fills in after about 45 seconds with Monte Carlo savings ranges, win rates, the weekly re-plan comparison and the plan-options results.
-2. **Plan options**: in the "Plan options" card, compare cash paid today against loss in calm and shocked futures, then click **Use this option** on *Staggered buys* to see split buys ("48 now … · +60 ordered 2026-10-27").
+   The robustness card fills in after about 10–20 seconds with Monte Carlo savings ranges, win rates, the weekly re-plan comparison and the plan-options results.
+2. **Plan options**: in the "Plan options" card, compare cash paid today against loss in calm and shocked futures, then click **Use this option** on *Staggered buys* to see split buys (for example SKU-015: 4,776 units now and +2,568 ordered at the day-14 review).
 3. **Inbox**: open `#/inbox`. Click a demo-message button (supplier delay for SUP-04, an influencer spike on SKU-019, an expiring cold-brew lot, a suppressed listing, a customs hold), then click **Extract signals**. Check each event's quoted evidence, then **Confirm** the delay and the spike. Scroll down to the **Extraction quality** card for precision/recall on the labelled set.
 4. **Re-plan**: back on `#/plan`, click **Re-plan**. The "what changed" card lists the lines that moved and why: extra SKU-019 for the spike, and a workaround for the delayed POs. With signals confirmed, the robustness card also shows the plan-without-signals ablation.
 5. **Override**: click **Edit plan**, change a quantity or discount or skip a line, and apply. The plan is re-scored and stays within budget.
 6. **Approve**: click **Approve & export CSVs** and download the PO and markdown files.
 7. **Assistant**: on `#/assistant`, ask "Why are we not expediting SKU-015?" or "What happens if SUP-04 slips another week?" and open the tool trace under the answer.
 8. **SKU drill-down**: on `#/sku/SKU-019`, see the forecast band, the supplier-delay cases and the hero/standard priority toggle.
-9. **Scenarios**: on `#/scenario`, try "SUP-04 delays another 7 days" or "budget is cut to 30k", then click **Run backtest**.
+9. **Scenarios**: on `#/scenario`, try "SUP-04 delays another 7 days" or "budget is cut to 6 lakh", then click **Run backtest**.
 
 ## LLM safeguards
 
@@ -278,7 +295,6 @@ Local container check: `docker build -t inventory-rescue . && docker run -p 8080
 ## Known limitations
 
 - The data is synthetic and covers a single warehouse. Value figures are simulated estimates. See the caveats under Results.
-- The presentation deck predates the robustness work, so its numbers are older than those in this README.
 - On Windows with WSL Docker, WSL can idle out and stop PostgreSQL. Keep a WSL session open, for example `wsl -e bash -c "exec sleep infinity"`, while you demo.
 - Background jobs run in-process. On Cloud Run this needs CPU always allocated, which `deploy.sh` sets. At larger scale, move them to Cloud Tasks or Cloud Run jobs.
 - There is no user authentication in the app. Use the IAM-protected Cloud Run deployment (the default) for anything beyond a demo.

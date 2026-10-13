@@ -182,9 +182,9 @@ def heuristic_extract(text: str, catalog: list[dict], suppliers: list[dict], ope
                                "end_date": end.isoformat() if end else None, "quoted_evidence": sent})
                 continue
         if re.search(r"expir|best[- ]before|use[- ]by|\bbbd\b|shelf life|short-dated", low) and skus:
-            u = re.search(r"(\d+)\s*(?:units|pcs|packs|bottles)", low)
+            u = re.search(r"(\d[\d,]*)\s*(?:units|pcs|packs|bottles)", low)
             last = end or start
-            events.append({"event_type": "expiry_risk", "sku_ids": skus, "magnitude": float(u.group(1)) if u else 0.0,
+            events.append({"event_type": "expiry_risk", "sku_ids": skus, "magnitude": float(u.group(1).replace(",", "")) if u else 0.0,
                            "start_date": None, "end_date": last.isoformat() if last else None,
                            "quoted_evidence": sent})
     return {"events": events}

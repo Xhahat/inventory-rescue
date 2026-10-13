@@ -280,6 +280,16 @@ export const inr = (v: number | null | undefined, digits = 0) =>
     ? '—'
     : '₹' + v.toLocaleString('en-IN', { maximumFractionDigits: digits, minimumFractionDigits: digits });
 
+/** Compact INR for chart axes: ₹45k, ₹2.5L (lakh), ₹1.2Cr (crore). */
+export const inrShort = (v: number) => {
+  const a = Math.abs(v);
+  const fmt = (x: number, unit: string) => `${v < 0 ? '-' : ''}₹${Number(x.toFixed(x < 10 ? 1 : 0))}${unit}`;
+  if (a >= 1e7) return fmt(a / 1e7, 'Cr');
+  if (a >= 1e5) return fmt(a / 1e5, 'L');
+  if (a >= 1e3) return fmt(a / 1e3, 'k');
+  return `${v < 0 ? '-' : ''}₹${Math.round(a)}`;
+};
+
 export const num = (v: number | null | undefined, digits = 0) =>
   v === null || v === undefined ? '—' : v.toLocaleString('en-IN', { maximumFractionDigits: digits });
 

@@ -754,7 +754,7 @@ def build_tools(tc: ToolContext) -> list[ToolSpec]:
                  "Re-optimise the whole plan in memory with a different budget and/or priority changes and report what "
                  "changes vs the current plan (actions, cash, expected loss, fill and hero fill rates). protect_hero / "
                  "protect_skus keep the current plan's actions for those SKUs fixed. Nothing is saved.",
-                 _obj({"budget": {"type": "number", "description": "INR, e.g. 40000"},
+                 _obj({"budget": {"type": "number", "description": "INR, e.g. 800000 (8 lakh)"},
                        "hero_skus": {**_SKUS, "description": "SKUs to treat as hero (priority)"},
                        "standard_skus": {**_SKUS, "description": "SKUs to treat as standard"},
                        "protect_skus": {**_SKUS, "description": "keep the current plan's action for these SKUs"},

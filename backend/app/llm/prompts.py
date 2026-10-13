@@ -28,6 +28,8 @@ Return {{"events": [ ... ]}} where each event is:
   "magnitude": number  (supplier_delay: delay in days; demand_spike/demand_drop: demand multiplier, e.g. 2.5 or 0.7; expiry_risk: units at risk),
   "start_date": "YYYY-MM-DD" or null, "end_date": "YYYY-MM-DD" or null,
   "quoted_evidence": exact verbatim substring of the message that supports the event}}
+start_date and end_date are inclusive: the first and last day the event applies. An effect that starts on 3 March
+and lasts 5 days runs from 3 March to 7 March.
 Only use SKU ids that appear in the catalog. If a supplier is named, map it to that supplier's SKUs mentioned or
 implied (e.g. via a PO number). A product that is not in the catalog (e.g. a new flavour or variant) is not a
 catalog SKU: skip it rather than mapping it to a similar product. Skip speculative or unconfirmed events ("might",

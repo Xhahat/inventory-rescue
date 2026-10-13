@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, inr, num, pct } from '../api';
+import { api, inr, inrShort, num, pct } from '../api';
 import type { Dist, OverrideItem, Overview, Plan, PlanAction, PlanDiff, Robustness, Strategy } from '../api';
 import { AlertList, Badge, Card, ErrorBox, Kpi, MethodBadge, PriorityBadge, RecordChip, Spinner } from '../ui';
 
@@ -206,7 +206,7 @@ function DiffCard({ d }: { d: PlanDiff }) {
 function Frontier({ plan, onPick }: { plan: Plan; onPick: (b: number) => void }) {
   const rows = plan.summary.frontier ?? [];
   if (!rows.length) return null;
-  const data = rows.map((r) => ({ ...r, label: `₹${Math.round(r.budget / 1000)}k` }));
+  const data = rows.map((r) => ({ ...r, label: inrShort(r.budget) }));
   const cur = rows.find((r) => r.is_current);
   return (
     <Card title="Budget frontier: what each extra rupee buys">
@@ -214,12 +214,12 @@ function Frontier({ plan, onPick }: { plan: Plan; onPick: (b: number) => void })
         <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="label" />
-          <YAxis tickFormatter={(v: number) => `₹${Math.round(v / 1000)}k`} width={60} />
+          <YAxis tickFormatter={inrShort} width={60} />
           <Tooltip formatter={(v) => inr(Number(v))} />
           <Legend />
           <Line type="monotone" dataKey="eval_loss" name="Simulated loss (evaluation world)" stroke="#2563eb" strokeWidth={2} isAnimationActive={false} />
           <Line type="monotone" dataKey="planning_loss" name="Expected loss (planning forecast)" stroke="#9ca3af" strokeDasharray="4 4" isAnimationActive={false} />
-          {cur && <ReferenceLine x={`₹${Math.round(cur.budget / 1000)}k`} stroke="#5b21b6" label="current" />}
+          {cur && <ReferenceLine x={inrShort(cur.budget)} stroke="#5b21b6" label="current" />}
         </LineChart>
       </ResponsiveContainer>
       <table className="table compact">

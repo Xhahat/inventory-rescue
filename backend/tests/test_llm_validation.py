@@ -113,7 +113,7 @@ def test_signal_extract_uses_llm_output_and_still_validates_each_event():
 @pytest.mark.parametrize("name,expect", [
     ("01_supplier_delay.txt", ("supplier_delay", ["SKU-007", "SKU-009"], 9.0)),
     ("02_influencer_spike.txt", ("demand_spike", ["SKU-019"], 3.0)),
-    ("03_expiring_lot.txt", ("expiry_risk", ["SKU-013"], 420.0)),
+    ("03_expiring_lot.txt", ("expiry_risk", ["SKU-013"], 8400.0)),
 ])
 def test_heuristic_parses_demo_messages(name, expect):
     from app.config import ROOT_DIR

@@ -94,9 +94,10 @@ def test_grounding_rejects_invented_numbers(text, bad):
 
 
 def test_grounding_allows_numbers_from_the_question():
-    q = ["Protect hero SKUs, budget 40k: what changes? Try a 35% markdown."]
-    assert assistant.check_grounding("At INR 40,000 with a 35% markdown nothing changes.", EVIDENCE, q).ok
-    assert not assistant.check_grounding("At INR 45,000 nothing changes.", EVIDENCE, q).ok
+    q = ["Protect hero SKUs, budget 8 lakh: what changes? Try a 35% markdown."]
+    assert assistant.check_grounding("At INR 8 lakh with a 35% markdown nothing changes.", EVIDENCE, q).ok
+    assert assistant.check_grounding("At INR 800,000 with a 35% markdown nothing changes.", EVIDENCE, q).ok
+    assert not assistant.check_grounding("At INR 9 lakh nothing changes.", EVIDENCE, q).ok
 
 
 def test_clean_history_caps_and_requires_user_last():
@@ -140,7 +141,7 @@ def test_tools_validate_arguments(db):
     assert "expected_loss_change" in ev["planning_world"] and "cash_change" in ev["cash"]
     sc = d(tools, _call("run_scenario", delay_supplier="SUP-04", lead_time_delta_days=7))
     assert sc["spec"]["delay_supplier"] == "SUP-04" and "scenario_impact_on_current_plan" in sc["evaluation_world"]
-    rp = d(tools, _call("replan_preview", budget=40000, protect_hero=True))
+    rp = d(tools, _call("replan_preview", budget=800_000, protect_hero=True))
     assert "error" not in rp
     em = d(tools, _call("draft_supplier_email", supplier_id="SUP-04", purpose="expedite"))
     assert em["draft_only"] is True and em["supplier"]["supplier_id"] == "SUP-04"
@@ -232,13 +233,13 @@ def client(seeded_db):
 
 
 def test_api_shape_disabled_and_scripted(client):
-    r = client.post("/api/assistant", json={"messages": [{"role": "user", "content": "Compare 50k vs 75k"}]})
+    r = client.post("/api/assistant", json={"messages": [{"role": "user", "content": "Compare 10 lakh vs 15 lakh"}]})
     assert r.status_code == 200 and r.json()["llm_disabled"] is True and r.json()["method"] == "disabled"
     assert client.post("/api/assistant", json={"messages": []}).status_code == 422
     assert client.post("/api/assistant", json={"messages": [{"role": "system", "content": "x"}]}).status_code == 422
     assert client.post("/api/assistant", json={"messages": [{"role": "assistant", "content": "x"}]}).status_code == 400
 
-    assert client.post("/api/plans", json={"budget": 50000}).status_code in (200, 201)
+    assert client.post("/api/plans", json={"budget": 1_000_000}).status_code in (200, 201)
 
     def frontier_answer(results):
         rows = results[-1][1]["rows"]
@@ -247,12 +248,12 @@ def test_api_shape_disabled_and_scripted(client):
                          f"INR {b['budget']:,.0f} it is INR {b['eval_total_loss']:,.0f}.")
 
     llm_client.set_llm_override(ScriptedLLM([
-        ModelTurn("", [_call("get_plan_summary"), _call("budget_frontier", budgets=[50000, 75000])]),
+        ModelTurn("", [_call("get_plan_summary"), _call("budget_frontier", budgets=[1_000_000, 1_500_000])]),
         frontier_answer]))
     try:
         r = client.post("/api/assistant", json={"messages": [
             {"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello."},
-            {"role": "user", "content": "Compare spending 50k vs 75k."}]})
+            {"role": "user", "content": "Compare spending 10 lakh vs 15 lakh."}]})
     finally:
         llm_client.clear_llm_override()
     body = r.json()
@@ -262,7 +263,7 @@ def test_api_shape_disabled_and_scripted(client):
     assert [c["name"] for c in body["tool_calls"]] == ["get_plan_summary", "budget_frontier"]
     for c in body["tool_calls"]:
         assert set(c) >= {"name", "args", "result_summary", "result", "ok"} and c["ok"]
-    assert body["tool_calls"][1]["args"] == {"budgets": [50000, 75000]}
+    assert body["tool_calls"][1]["args"] == {"budgets": [1_000_000, 1_500_000]}
 
 
 # ---------------------------------------------------------------- provider sessions with fake SDKs

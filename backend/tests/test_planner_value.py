@@ -57,7 +57,7 @@ def worlds(db):
     return snap, ctxs, state.planning_world(snap, ctxs), state.evaluation_world(snap, ctxs)
 
 
-@pytest.mark.parametrize("budget", [0, 10_000, 50_000, 150_000])
+@pytest.mark.parametrize("budget", [0, 200_000, 1_000_000, 3_000_000])
 def test_plan_respects_budget_and_is_never_worse_than_doing_nothing(worlds, budget):
     snap, ctxs, pw, _ = worlds
     res = build_plan(ctxs, pw, budget, 1.645)
@@ -74,7 +74,7 @@ def test_plan_respects_budget_and_is_never_worse_than_doing_nothing(worlds, budg
 
 def test_more_budget_never_increases_planned_loss(worlds):
     _, ctxs, pw, _ = worlds
-    losses = [build_plan(ctxs, pw, b, 1.645).expected_loss_plan for b in (0, 20_000, 50_000, 100_000)]
+    losses = [build_plan(ctxs, pw, b, 1.645).expected_loss_plan for b in (0, 400_000, 1_000_000, 2_000_000)]
     assert all(b <= a + 1e-6 for a, b in zip(losses, losses[1:]))
 
 
@@ -83,27 +83,29 @@ def test_demand_surge_never_turns_a_buy_into_defer(worlds):
     from app.services import scenarios
 
     _, ctxs, pw, _ = worlds
-    budget = 20_000
+    budget = 400_000
     sku = next(d.ctx.sku_id for d in build_plan(ctxs, pw, budget, 1.645).decisions if d.action.order_qty > 0)
     surged = scenarios.apply(pw, ctxs, scenarios.ScenarioSpec(demand_multiplier=5.0, affected_skus=[sku]))
-    dec = next(d for d in build_plan(ctxs, surged, budget, 1.645).decisions if d.ctx.sku_id == sku)
+    # Only this SKU competes for the budget, so a defer could only come from missing (dropped) buy options.
+    alone = [c for c in ctxs if c.sku_id == sku]
+    dec = build_plan(alone, surged, budget, 1.645).decisions[0]
     assert dec.action.order_qty > 0
     assert dec.action.cash_outlay <= budget + 1e-6
 
 
 def test_baseline_respects_budget_and_orders_lowest_cover_first(worlds):
     _, ctxs, _, _ = worlds
-    base = baseline_actions(ctxs, 50_000)
+    base = baseline_actions(ctxs, 1_000_000)
     orders = [a for a in base if a.order_qty > 0]
-    assert sum(a.cash_outlay for a in base) <= 50_000 + 1e-6
+    assert sum(a.cash_outlay for a in base) <= 1_000_000 + 1e-6
     assert orders, "seed story should trigger rule-based orders"
     assert all(a.markdown is None and not a.expedite for a in base)
 
 
 def test_plan_beats_rule_baseline_in_evaluation_world(worlds):
     _, ctxs, pw, ew = worlds
-    res = build_plan(ctxs, pw, 50_000, 1.645)
-    card = value.compare(ctxs, res.actions, baseline_actions(ctxs, 50_000), ew)
+    res = build_plan(ctxs, pw, 1_000_000, 1.645)
+    card = value.compare(ctxs, res.actions, baseline_actions(ctxs, 1_000_000), ew)
     assert card["savings"] > 0
     assert card["plan"]["total_loss"] < card["baseline"]["total_loss"]
     # markdowns are used for the short-dated lots in the seed story

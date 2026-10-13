@@ -44,7 +44,7 @@ def compute_alerts(ctxs: list[SkuContext], world: World, as_of: date) -> list[di
         if risky:
             units = sum(risky.values())
             out.append({
-                "entity_id": ctx.sku_id, "alert_type": "expiry", "severity": "high" if units * ctx.econ.unit_cost > 5000 else "medium",
+                "entity_id": ctx.sku_id, "alert_type": "expiry", "severity": "high" if units * ctx.econ.unit_cost > 100_000 else "medium",
                 "message": f"{ctx.name}: {units:.0f} units in {', '.join(risky)} exceed expected sell-through before expiry",
                 "details": {"lots": risky, "writeoff_inr": round(units * ctx.econ.unit_cost, 2)},
             })

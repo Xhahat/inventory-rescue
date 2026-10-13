@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, inr, num, pct, waitForJob } from '../api';
+import { api, inr, inrShort, num, pct, waitForJob } from '../api';
 import type { Backtest, Job, Plan, ScenarioResult, Totals } from '../api';
 import { Badge, Card, ErrorBox, MethodBadge, Spinner } from '../ui';
 
@@ -8,7 +8,7 @@ const EXAMPLES = [
   'What if demand rises 20% and QuickPack is delayed 7 days?',
   'What if demand for SKU-019 doubles for two weeks?',
   'What if supplier SUP-02 has an outage?',
-  'What if our budget is cut to 30000?',
+  'What if our budget is cut to 6 lakh?',
 ];
 
 const LOSS_PARTS: [keyof Totals, string, string][] = [
@@ -72,7 +72,7 @@ function LossChart({ cols }: { cols: [string, Totals][] }) {
       <BarChart data={data} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
         <XAxis dataKey="name" fontSize={12} />
-        <YAxis fontSize={12} tickFormatter={(v: number) => `₹${Math.round(v / 1000)}k`} />
+        <YAxis fontSize={12} tickFormatter={inrShort} />
         <Tooltip formatter={(v) => inr(Number(v))} />
         <Legend />
         {LOSS_PARTS.map(([k, label, color]) => (

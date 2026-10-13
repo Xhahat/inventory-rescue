@@ -22,7 +22,7 @@ def world(db):
     return snap, ctxs, state.planning_world(snap, ctxs), state.evaluation_world(snap, ctxs)
 
 
-def _menu(ctxs, pw, budget=50000):
+def _menu(ctxs, pw, budget=1_000_000):
     return prepare_menu(ctxs, pw, [budget], get_settings().service_level_z, stagger=True)
 
 
@@ -62,10 +62,10 @@ def test_solve_menu_stagger_flag(world):
     _, ctxs, pw, _ = world
     menu = _menu(ctxs, pw)
     rate, snap_h = get_settings().working_capital_rate, 30
-    commit = solve_menu(menu, 50000)
-    stag = solve_menu(menu, 50000, stagger=True, capital_rate=rate)
+    commit = solve_menu(menu, 1_000_000)
+    stag = solve_menu(menu, 1_000_000, stagger=True, capital_rate=rate)
     assert not any(a.later_qty for a in commit.actions)
-    assert stag.cash_used <= 50000 + 1e-6 and stag.cash_today <= stag.cash_used
+    assert stag.cash_used <= 1_000_000 + 1e-6 and stag.cash_today <= stag.cash_used
 
     def total(r):
         return r.expected_loss_plan + r.service_penalty_plan + sum(a.capital_cost(snap_h, rate) for a in r.actions)
@@ -76,12 +76,12 @@ def test_solve_menu_stagger_flag(world):
 def test_plan_core_builds_four_options(world):
     snap, ctxs, pw, ew = world
     s = get_settings()
-    result, _, rows, summary = plans._plan_core(snap, ctxs, pw, ew, 50000.0, strategy="staggered")
+    result, _, rows, summary = plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="staggered")
     opts = {o["key"]: o for o in summary["options"]}
     assert set(opts) == set(plans.STRATEGIES)
     assert opts["staggered"]["is_current"] and summary["strategy"] == "staggered"
-    assert opts["reserve"]["cash_committed"] <= 50000 * (1 - s.reserve_share) + 1e-6
-    assert opts["lean"]["operating_budget"] <= 50000
+    assert opts["reserve"]["cash_committed"] <= 1_000_000 * (1 - s.reserve_share) + 1e-6
+    assert opts["lean"]["operating_budget"] <= 1_000_000
     assert opts["commit_now"]["cash_scheduled"] == 0
     for o in opts.values():
         assert o["cash_today"] + o["cash_scheduled"] == pytest.approx(o["cash_committed"], abs=0.05)
@@ -90,23 +90,23 @@ def test_plan_core_builds_four_options(world):
         if r["later_qty"]:
             assert r["later_order_date"] > summary["as_of"] and r["later_arrival_date"]
     with pytest.raises(ValueError):
-        plans._plan_core(snap, ctxs, pw, ew, 50000.0, strategy="yolo")
+        plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="yolo")
 
 
 def test_plan_once_follows_schedule_and_replan_releases_it(world):
     snap, ctxs, pw, ew = world
-    stag = solve_menu(_menu(ctxs, pw), 50000, stagger=True, capital_rate=0.18)
+    stag = solve_menu(_menu(ctxs, pw), 1_000_000, stagger=True, capital_rate=0.18)
     if not any(a.later_qty for a in stag.actions):
         pytest.skip("no staggered buy chosen on this seed")
     truth = rolling.truth_from_world(ew, ctxs)
-    once = rolling.simulate_policy(snap, ctxs, truth, 50000, rolling.plan_once(stag.actions))
+    once = rolling.simulate_policy(snap, ctxs, truth, 1_000_000, rolling.plan_once(stag.actions))
     one_shot = value.evaluate_actions(ctxs, stag.actions, ew)["totals"]
     assert once["total_loss"] == pytest.approx(one_shot["total_loss"], abs=0.05)
     assert once["cash_day0"] == pytest.approx(stag.cash_today, abs=0.05)
-    rel = rolling.simulate_policy(snap, ctxs, truth, 50000, rolling.replan_weekly(snap, stag.actions, 1.645),
+    rel = rolling.simulate_policy(snap, ctxs, truth, 1_000_000, rolling.replan_weekly(snap, stag.actions, 1.645),
                                   confirm=rolling.release_to_replan)
     assert rel["tranches_released"] == sum(1 for a in stag.actions if a.later_qty)
-    assert rel["cash_spent"] <= 50000 + 1e-6
+    assert rel["cash_spent"] <= 1_000_000 + 1e-6
 
 
 def test_shock_worlds_are_reproducible_and_shift_demand(world):
@@ -127,22 +127,22 @@ def test_shock_worlds_are_reproducible_and_shift_demand(world):
 def test_compare_options_is_paired_and_picks_best(world):
     snap, ctxs, pw, ew = world
     menu = _menu(ctxs, pw)
-    opts = {"commit_now": (solve_menu(menu, 50000).actions, 50000.0),
-            "reserve": (solve_menu(menu, 35000).actions, 50000.0)}
+    opts = {"commit_now": (solve_menu(menu, 1_000_000).actions, 1_000_000.0),
+            "reserve": (solve_menu(menu, 700_000).actions, 1_000_000.0)}
     calm = state.monte_carlo_worlds(snap, ctxs, 1)
     res = rolling.compare_options(snap, ctxs, ew, calm, rolling.shock_worlds(calm, ctxs), opts, 1.645, 0.18)
     assert set(res["options"]) == {"commit_now", "reserve"}
     assert set(res["best"]) == {"actual", "calm", "shock"}
     r = res["options"]["reserve"]
-    assert r["actual"]["cash_day0"] <= 35000 + 1e-6 and r["actual"]["cash_spent"] <= 50000 + 1e-6
+    assert r["actual"]["cash_day0"] <= 700_000 + 1e-6 and r["actual"]["cash_spent"] <= 1_000_000 + 1e-6
     diff = res["options"]["commit_now"]["calm"]["total_loss"]["mean"] - r["calm"]["total_loss"]["mean"]
     assert r["vs_commit_now"]["calm"]["mean"] == pytest.approx(diff, abs=0.05)
 
 
 def test_api_strategy_and_scheduled_export(seeded_db):
     with TestClient(app) as client:
-        assert client.post("/api/plans", json={"budget": 50000, "strategy": "nope"}).status_code == 422
-        plan = client.post("/api/plans", json={"budget": 50000, "strategy": "staggered"}).json()
+        assert client.post("/api/plans", json={"budget": 1_000_000, "strategy": "nope"}).status_code == 422
+        plan = client.post("/api/plans", json={"budget": 1_000_000, "strategy": "staggered"}).json()
         s = plan["summary"]
         assert s["strategy"] == "staggered" and len(s["options"]) == 4
         rob = client.get(f"/api/plans/{plan['id']}").json()["summary"]["robustness"]

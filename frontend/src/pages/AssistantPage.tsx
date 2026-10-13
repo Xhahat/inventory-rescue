@@ -15,10 +15,10 @@ const MAX_SENT = 12;
 
 const EXAMPLES = [
   'Why are we not expediting SKU-015?',
-  'Protect hero SKUs, budget 40k: what changes?',
+  'Protect hero SKUs, budget 8 lakh: what changes?',
   'What happens if SUP-04 slips another week?',
   'Which SKUs have expiry risk and what would a 35% markdown do?',
-  'Compare spending 50k vs 75k.',
+  'Compare spending 10 lakh vs 15 lakh.',
   'Draft the expedite request email to SUP-04 for the approved plan',
 ];
 

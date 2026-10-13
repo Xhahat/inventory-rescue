@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Built frontend served by FastAPI (single Cloud Run service). Ignored when the folder does not exist.
     static_dir: str = str(ROOT_DIR / "frontend" / "dist")
 
-    default_budget_inr: float = 50_000.0
+    default_budget_inr: float = 1_000_000.0
     horizon_days: int = 30
     service_level_z: float = 1.645
     max_csv_bytes: int = 2_000_000

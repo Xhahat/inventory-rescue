@@ -41,25 +41,25 @@ def test_priorities_mark_top_revenue_skus_as_heroes(world):
 
 def test_tuned_baseline_is_best_of_grid_in_planning_world(world):
     _, ctxs, pw, _ = world
-    acts, info = tuned_baseline(ctxs, pw, 50000)
+    acts, info = tuned_baseline(ctxs, pw, 1_000_000)
     loss = lambda a: sum(value.evaluate_actions(ctxs, a, pw)["totals"]["total_loss"] for _ in [0])  # noqa: E731
     best = loss(acts)
     assert best == pytest.approx(info["planning_world_loss"], abs=0.05)
-    assert best <= loss(baseline_actions(ctxs, 50000)) + 1e-6
+    assert best <= loss(baseline_actions(ctxs, 1_000_000)) + 1e-6
     s, c = TUNING_GRID[len(TUNING_GRID) // 2]
-    assert best <= loss(baseline_actions(ctxs, 50000, s, c)) + 1e-6
+    assert best <= loss(baseline_actions(ctxs, 1_000_000, s, c)) + 1e-6
 
 
 def test_frontier_is_monotone_and_score_actions_matches_plan(world):
     _, ctxs, pw, _ = world
     z = get_settings().service_level_z
-    menu = prepare_menu(ctxs, pw, [0, 25000, 50000, 100000], z)
-    res = frontier(menu, [0, 25000, 50000, 100000])
+    menu = prepare_menu(ctxs, pw, [0, 500_000, 1_000_000, 2_000_000], z)
+    res = frontier(menu, [0, 500_000, 1_000_000, 2_000_000])
     obj = [r.expected_loss_plan + r.service_penalty_plan for r in res]
     assert all(a >= b - 1e-6 for a, b in zip(obj, obj[1:]))
     assert res[0].cash_used == 0
-    plan = build_plan(ctxs, pw, 50000, z)
-    again = score_actions(ctxs, pw, plan.actions, z, 50000)
+    plan = build_plan(ctxs, pw, 1_000_000, z)
+    again = score_actions(ctxs, pw, plan.actions, z, 1_000_000)
     assert again.expected_loss_plan == pytest.approx(plan.expected_loss_plan, abs=0.01)
 
 
@@ -69,8 +69,8 @@ def test_monte_carlo_worlds_are_reproducible_and_reported(world):
     w2 = state.monte_carlo_worlds(snap, ctxs, 5, seed=3)
     sku = ctxs[0].sku_id
     assert all(np.array_equal(a.skus[sku].demand_paths[0][1], b.skus[sku].demand_paths[0][1]) for a, b in zip(w1, w2))
-    plan = build_plan(ctxs, pw, 50000, get_settings().service_level_z).actions
-    mc = value.monte_carlo(ctxs, {"plan": plan, "static": baseline_actions(ctxs, 50000)}, w1)
+    plan = build_plan(ctxs, pw, 1_000_000, get_settings().service_level_z).actions
+    mc = value.monte_carlo(ctxs, {"plan": plan, "static": baseline_actions(ctxs, 1_000_000)}, w1)
     sv = mc["savings"]["plan_vs_static"]
     assert mc["n_worlds"] == 5 and sv["p5"] <= sv["mean"] <= sv["p95"] and 0 <= sv["win_rate"] <= 1
     assert 0 <= mc["policies"]["plan"]["fill_rate"]["mean"] <= 1
@@ -78,14 +78,14 @@ def test_monte_carlo_worlds_are_reproducible_and_reported(world):
 
 def test_rolling_plan_once_equals_one_shot_evaluation(world):
     snap, ctxs, pw, ew = world
-    plan = build_plan(ctxs, pw, 50000, get_settings().service_level_z).actions
+    plan = build_plan(ctxs, pw, 1_000_000, get_settings().service_level_z).actions
     one = value.evaluate_actions(ctxs, plan, ew)["totals"]
     truth = rolling.truth_from_world(ew, ctxs)
-    rolled = rolling.simulate_policy(snap, ctxs, truth, 50000, rolling.plan_once(plan))
+    rolled = rolling.simulate_policy(snap, ctxs, truth, 1_000_000, rolling.plan_once(plan))
     assert rolled["total_loss"] == pytest.approx(one["total_loss"], abs=0.05)
     assert rolled["units_short"] == pytest.approx(one["units_short"], abs=0.01)
-    weekly = rolling.simulate_policy(snap, ctxs, truth, 50000, rolling.replan_weekly(snap, plan, 1.645))
-    assert weekly["cash_spent"] <= 50000 + 1e-6
+    weekly = rolling.simulate_policy(snap, ctxs, truth, 1_000_000, rolling.replan_weekly(snap, plan, 1.645))
+    assert weekly["cash_spent"] <= 1_000_000 + 1e-6
 
 
 def test_without_signals_divides_out_confirmed_multipliers(world):

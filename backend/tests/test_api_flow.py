@@ -56,7 +56,7 @@ def test_full_flow_with_fake_llm(client, fake_llm):
     invalid = next(e for e in res["events"] if e["status"] == "invalid")
     assert client.post(f"/api/signals/{invalid['id']}/confirm").status_code == 409
 
-    plan_before = client.post("/api/plans", json={"budget": 50000}).json()
+    plan_before = client.post("/api/plans", json={"budget": 1_000_000}).json()
 
     conf = client.post(f"/api/signals/{pending['id']}/confirm").json()
     assert conf["signal"]["status"] == "confirmed" and conf["job"]
@@ -68,9 +68,9 @@ def test_full_flow_with_fake_llm(client, fake_llm):
     assert sku["forecast"]["fallback_reason"].startswith("invalid output")
     assert any("EV-" in d for d in sku["forecast"]["drivers"])
 
-    plan = client.post("/api/plans", json={"budget": 50000}).json()
+    plan = client.post("/api/plans", json={"budget": 1_000_000}).json()
     s = plan["summary"]
-    assert s["cash_used"] <= 50000
+    assert s["cash_used"] <= 1_000_000
     assert plan["explanation"]["method"] == "template" and plan["explanation"]["error"]
     assert s["scorecard"]["savings"] > 0
     assert s["scorecard"]["savings"] > plan_before["summary"]["scorecard"]["savings"]
@@ -107,18 +107,18 @@ def test_reject_signal_and_heuristic_path_without_llm(client):
 
 def test_scenario_and_backtest(client):
     sc = client.post("/api/scenarios", json={"question": "What if demand rises 20% and QuickPack is delayed 7 days?",
-                                             "budget": 50000}).json()
+                                             "budget": 1_000_000}).json()
     assert sc["parse_method"] == "heuristic"
     assert sc["spec"]["demand_multiplier"] == pytest.approx(1.2)
     o = sc["outcomes_in_scenario"]
     assert o["adapted_plan"]["total_loss"] <= o["current_plan"]["total_loss"] + 1e-6
-    assert sc["adapted_cash_used"] <= 50000
+    assert sc["adapted_cash_used"] <= 1_000_000
 
-    cut = client.post("/api/scenarios", json={"question": "What if our budget is cut to 20000?", "budget": 50000}).json()
-    assert cut["budget"] == 20000 and cut["current_budget"] == 50000
-    assert cut["adapted_cash_used"] <= 20000 < cut["current_cash_used"]
+    cut = client.post("/api/scenarios", json={"question": "What if our budget is cut to 4 lakh?", "budget": 1_000_000}).json()
+    assert cut["budget"] == 400_000 and cut["current_budget"] == 1_000_000
+    assert cut["adapted_cash_used"] <= 400_000 < cut["current_cash_used"]
     assert cut["changed_actions"]
-    bad = client.post("/api/scenarios", json={"question": "What if demand for SKU-999 doubles?", "budget": 50000})
+    bad = client.post("/api/scenarios", json={"question": "What if demand for SKU-999 doubles?", "budget": 1_000_000})
     assert bad.status_code == 400 and "SKU-999" in bad.json()["detail"]
     job = client.post("/api/backtest").json()
     assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "done"
@@ -131,7 +131,7 @@ def test_scenario_and_backtest(client):
 
 
 def test_plan_robustness_frontier_overrides_and_diff(client):
-    plan = client.post("/api/plans", json={"budget": 50000}).json()
+    plan = client.post("/api/plans", json={"budget": 1_000_000}).json()
     s = plan["summary"]
     assert s["diff"] is None and s["robustness"]["status"] == "queued"
     fr = s["frontier"]
@@ -167,11 +167,11 @@ def test_plan_robustness_frontier_overrides_and_diff(client):
     assert other["sku_id"] not in {a["sku_id"] for a in edited["actions"]}
     assert other["sku_id"] in {x["sku_id"] for x in edited["summary"]["overridden_removed"]}
     assert edited["summary"]["revision"] == 1 and edited["summary"]["overrides"]
-    assert edited["summary"]["cash_used"] <= 50000
+    assert edited["summary"]["cash_used"] <= 1_000_000
 
-    nxt = client.post("/api/plans", json={"budget": 30000}).json()
+    nxt = client.post("/api/plans", json={"budget": 600_000}).json()
     d = nxt["summary"]["diff"]
-    assert d["previous_plan_id"] == plan["id"] and d["previous_budget"] == 50000
+    assert d["previous_plan_id"] == plan["id"] and d["previous_budget"] == 1_000_000
     assert d["n_added"] + d["n_removed"] + d["n_changed"] == len(d["changes"])
     client.post(f"/api/plans/{plan['id']}/approve")
     assert client.post(f"/api/plans/{plan['id']}/overrides",
