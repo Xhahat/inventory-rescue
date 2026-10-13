@@ -12,7 +12,8 @@ export function Badge({ kind, children, title }: { kind?: string; children: Reac
 export function MethodBadge({ method, reason }: { method: string; reason?: string | null }) {
   const map: Record<string, [string, string]> = {
     llm: ['ok', 'LLM (validated)'],
-    fallback: ['warn', 'Fallback: seasonal-naive'],
+    hybrid: ['ok', 'Hybrid: statistical + model-tuned events'],
+    statistical: ['neutral', 'Statistical (Holt-Winters / Croston)'],
     heuristic: ['warn', 'Fallback: rule-based parser'],
     template: ['warn', 'Fallback: template'],
   };
@@ -22,6 +23,16 @@ export function MethodBadge({ method, reason }: { method: string; reason?: strin
       {label}
     </Badge>
   );
+}
+
+export function PriorityBadge({ priority, overridden }: { priority: string; overridden?: boolean }) {
+  return priority === 'hero' ? (
+    <Badge kind="hero" title={overridden ? 'Set manually' : 'Top revenue SKU (automatic)'}>
+      ★ hero{overridden ? '*' : ''}
+    </Badge>
+  ) : overridden ? (
+    <Badge title="Set manually">standard*</Badge>
+  ) : null;
 }
 
 export function Kpi({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: string }) {

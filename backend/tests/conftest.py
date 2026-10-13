@@ -11,6 +11,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="irc_tests_"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["VAR_DIR"] = str(_TMP / "var")
 os.environ["LLM_DISABLED"] = "true"
+os.environ["EVAL_WORLDS"] = "8"
+os.environ["ROLLING_WORLDS"] = "2"
 
 BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:

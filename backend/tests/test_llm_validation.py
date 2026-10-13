@@ -133,31 +133,54 @@ def test_prompt_wraps_untrusted_text_and_strips_delimiters():
     assert wrapped.count("UNTRUSTED_TEXT>>>") == 2 or wrapped.count("<<<") == 2
 
 
-def test_forecast_validator_rejects_bad_shapes_and_unbounded_spikes():
-    hist = [10.0] * 56
-    mult = [1.0] * 5
-    ok = {"p10": [8] * 5, "p50": [10] * 5, "p90": [12] * 5, "drivers": ["x"]}
-    assert forecasting.validate_forecast(ok, 5, hist, mult)["p50"] == [10.0] * 5
-    for bad in ({**ok, "p50": [10] * 4}, {**ok, "p10": [11] * 5}, {**ok, "p90": [12, 12, 12, 12, "a"]},
-                {**ok, "p10": [-1] * 5}, {**ok, "p90": [1000] * 5}):
+def _ctx_event(eid="CTX-1", mult=1.3, start=date(2026, 10, 15), end=date(2026, 10, 20)):
+    return forecasting.EventLike(eid, "festival", start, end, mult, "Diwali build-up", "context")
+
+
+def test_adjustment_validator_bounds_event_multipliers_and_extras():
+    ev = _ctx_event()
+    sig = forecasting.EventLike(7, "demand_spike", date(2026, 10, 15), date(2026, 10, 24), 3.0, "creator", "signal")
+    adj = forecasting.adjustable_events(AS_OF, 30, [ev, sig])
+    assert [e.id for e in adj] == ["CTX-1"]  # confirmed signals are fixed, never tunable
+    ok = forecasting.validate_adjustments({"event_multipliers": {"CTX-1": 1.5}, "drivers": ["d"] * 9}, adj, AS_OF, 30)
+    assert ok["event_multipliers"] == {"CTX-1": 1.5} and len(ok["drivers"]) == forecasting.MAX_DRIVERS
+    for bad in ({"event_multipliers": {"CTX-1": 2.9}},  # > 2x prior
+                {"event_multipliers": {"CTX-1": 0.5}},  # < 0.5x prior
+                {"event_multipliers": {"EV-7": 1.0}},  # signal ids cannot be tuned
+                {"event_multipliers": {"CTX-1": "high"}},
+                {"extra_adjustments": [{"start": "2026-10-14", "end": "2026-10-15", "multiplier": 1.5}]},
+                {"extra_adjustments": [{"start": "2026-12-01", "end": "2026-12-02", "multiplier": 1.1}]},
+                {"extra_adjustments": [{"start": "2026-10-14", "end": "2026-10-15", "multiplier": 1.1}] * 3}):
         with pytest.raises(ValueError):
-            forecasting.validate_forecast(bad, 5, hist, mult)
-    # a confirmed x3 event justifies higher values ...
-    spike = {"p10": [20] * 5, "p50": [30] * 5, "p90": [100] * 5}
-    assert forecasting.validate_forecast(spike, 5, hist, [3.0] * 5)
-    # ... and must actually be reflected in p50 (and in the right direction for drops)
-    with pytest.raises(ValueError, match="ignores a confirmed event"):
-        forecasting.validate_forecast({**ok, "p90": [100] * 5}, 5, hist, [3.0] * 5)
-    with pytest.raises(ValueError, match="ignores a confirmed event"):
-        forecasting.validate_forecast(ok, 5, hist, [0.4] * 5)
-    # small multipliers (e.g. a 15% promotion) are not enforced
-    assert forecasting.validate_forecast(ok, 5, hist, [1.15] * 5)
+            forecasting.validate_adjustments(bad, adj, AS_OF, 30)
+    ex = forecasting.validate_adjustments(
+        {"extra_adjustments": [{"start": "2026-10-14", "end": "2026-10-15", "multiplier": 1.1, "reason": "r"}]},
+        adj, AS_OF, 30)["extras"]
+    assert len(ex) == 1 and ex[0].multiplier == pytest.approx(1.1)
 
 
-def test_forecast_one_falls_back_with_label():
+def test_statistical_forecast_applies_events_and_is_ordered():
+    hist = [10.0 + (i % 7) for i in range(120)]
+    p10, p50, p90, drivers, base = forecasting.statistical_forecast(hist, AS_OF, 30, [_ctx_event()])
+    assert len(p50) == 30 and all(a <= b <= c for a, b, c in zip(p10, p50, p90))
+    assert p50[3] == pytest.approx(base.base_p50[3] * 1.3, rel=1e-3)  # Oct 16 is inside the event
+    _, tuned, _, _, _ = forecasting.statistical_forecast(hist, AS_OF, 30, [_ctx_event()], {"CTX-1": 1.6})
+    assert tuned[3] > p50[3] and tuned[0] == p50[0]
+
+
+def test_forecast_one_falls_back_to_statistical_with_label():
     out = forecasting.forecast_one(Fixed("nope"), "SKU-1", {}, [5.0] * 56, AS_OF, 30, [], "h")
-    assert out.method == "fallback" and out.fallback_reason.startswith("invalid output")
+    assert out.method == "statistical" and out.fallback_reason.startswith("invalid output")
     assert len(out.p50) == 30 and all(a <= b <= c for a, b, c in zip(out.p10, out.p50, out.p90))
+
+
+def test_forecast_one_hybrid_uses_validated_multipliers():
+    hist = [10.0] * 120
+    ev = _ctx_event()
+    out = forecasting.forecast_one(Fixed(json.dumps({"event_multipliers": {"CTX-1": 1.5}, "drivers": ["festival"]})),
+                                   "SKU-1", {}, hist, AS_OF, 30, [ev], "h")
+    stat = forecasting.statistical_forecast(hist, AS_OF, 30, [ev])[1]
+    assert out.method == "hybrid" and out.p50[3] == pytest.approx(stat[3] / 1.3 * 1.5, rel=1e-3)
 
 
 def test_scenario_spec_validation_and_heuristic():

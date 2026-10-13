@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -24,3 +26,18 @@ class ScenarioIn(BaseModel):
 class ReforecastIn(BaseModel):
     sku_ids: list[str] | None = None
     force: bool = False
+
+class OverrideItem(BaseModel):
+    sku_id: str = Field(min_length=1, max_length=24)
+    order_qty: float | None = Field(None, ge=0, le=1_000_000)
+    skip: bool = False
+    discount_pct: float | None = Field(None, ge=0, le=0.9)
+    expedite: bool | None = None
+
+
+class OverridesIn(BaseModel):
+    items: list[OverrideItem] = Field(min_length=1, max_length=200)
+
+
+class PriorityIn(BaseModel):
+    priority: Literal["hero", "standard", "auto"]

@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.simulator import MARKDOWN_ELASTICITY, Inbound, Lot, Markdown, ProductEconomics, simulate
+from app.services.simulator import Inbound, Lot, Markdown, ProductEconomics, markdown_uplift, simulate
 
 ECON = ProductEconomics(unit_cost=60.0, unit_price=100.0, shelf_life_days=60)
 
@@ -42,7 +42,7 @@ def test_markdown_reduces_expiry_and_books_costs_without_double_counting():
     base = simulate(ECON, lots, [], demand)
     md = simulate(ECON, lots, [], demand, Markdown("SHORT", 0.5, 0))
     assert base.expired_units == pytest.approx(70)
-    uplift = 1 + MARKDOWN_ELASTICITY * 0.5
+    uplift = 1 + markdown_uplift(0.5)
     sold = min(100, 6 * 5 * uplift)
     assert md.expired_units == pytest.approx(100 - sold)
     assert md.markdown_units == pytest.approx(sold)
@@ -59,4 +59,12 @@ def test_markdown_start_day_respected():
     r = simulate(ECON, lots, [], [5.0] * 10, Markdown("SHORT", 0.2, 5))
     late = simulate(ECON, lots, [], [5.0] * 10, Markdown("SHORT", 0.2, 0))
     assert r.markdown_units < late.markdown_units
-    assert r.markdown_units == pytest.approx(3 * 5 * (1 + MARKDOWN_ELASTICITY * 0.2))
+    assert r.markdown_units == pytest.approx(3 * 5 * (1 + markdown_uplift(0.2)))
+
+
+def test_markdown_uplift_is_concave_and_category_specific():
+    u = [markdown_uplift(d, "Beverages") for d in (0.1, 0.2, 0.3, 0.4)]
+    gains = [b - a for a, b in zip(u, u[1:])]
+    assert all(g > 0 for g in gains) and gains[0] > gains[1] > gains[2]
+    assert markdown_uplift(0.3, "Beverages") > markdown_uplift(0.3, "Supplements")
+    assert markdown_uplift(0.0) == 0.0

@@ -19,11 +19,15 @@ from ..models import AppState, Job, Plan, Product, Supplier, utcnow
 from . import alerts as alerts_svc
 from . import explanation as expl
 from . import forecasting as fc
+from . import rolling
 from . import scenarios as scen
 from . import state
 from . import value
-from .planner import action_reasons, baseline_actions, build_plan
-from .world import Action, SkuContext, World
+from .planner import (action_reasons, baseline_actions, build_plan, prepare_menu, score_actions, solve_menu,
+                      tuned_baseline)
+from .simulator import Markdown
+from .supply import round_order_qty
+from .world import Action, SkuContext, World, defer
 
 KIND_LABEL = {
     "standard_po": "Buy (standard PO)",
@@ -112,12 +116,52 @@ def explanation_input(plan_summary: dict, rows: list[dict]) -> dict:
     return out
 
 
-def _plan_core(snap, ctxs: list[SkuContext], pw: World, ew: World, budget: float):
+FRONTIER_MULTIPLES = (0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0)
+
+
+def _frontier(ctxs, menu, ew: World, budget: float) -> list[dict]:
+    rows = []
+    for b in sorted({round(budget * m, 2) for m in FRONTIER_MULTIPLES} | {round(budget, 2)}):
+        r = solve_menu(menu, b)
+        ev = value.evaluate_actions(ctxs, r.actions, ew)
+        rows.append({"budget": b, "cash_used": round(r.cash_used, 2),
+                     "planning_loss": round(r.expected_loss_plan, 2),
+                     "planning_objective": round(r.expected_loss_plan + r.service_penalty_plan, 2),
+                     "eval_loss": ev["totals"]["total_loss"], "eval_fill_rate": ev["totals"]["fill_rate"],
+                     "eval_hero_fill_rate": value.hero_fill_rate(ctxs, ev["per_sku"]),
+                     "n_actions": sum(1 for a in r.actions if a.kind != "defer"), "is_current": b == round(budget, 2)})
+    return rows
+
+
+def _plan_core(snap, ctxs: list[SkuContext], pw: World, ew: World, budget: float,
+               actions: list[Action] | None = None):
+    """Optimise (or, with `actions`, score operator-overridden decisions) and build the scorecard."""
     s = get_settings()
-    result = build_plan(ctxs, pw, budget, s.service_level_z)
+    z = s.service_level_z
+    menu = prepare_menu(ctxs, pw, sorted({budget * m for m in FRONTIER_MULTIPLES} | {budget}), z)
+    result = solve_menu(menu, budget) if actions is None else score_actions(ctxs, pw, actions, z, budget)
     base = baseline_actions(ctxs, budget)
+    tuned, tuned_info = tuned_baseline(ctxs, pw, budget)
     rows = _action_rows(result, snap.as_of)
     card = value.compare(ctxs, result.actions, base, ew, include_per_sku=True)
+    t_eval = value.evaluate_actions(ctxs, tuned, ew)
+    card["tuned_baseline"] = t_eval["totals"]
+    card["savings_vs_tuned"] = round(t_eval["totals"]["total_loss"] - card["plan"]["total_loss"], 2)
+    per_sku = card["per_sku"]
+    for k, v in per_sku.items():
+        v["tuned_baseline"] = t_eval["per_sku"][k]
+    hero = [c.sku_id for c in ctxs if c.priority == "hero"]
+    service = {
+        "hero_skus": hero,
+        "goodwill_pct": {"hero": s.goodwill_hero_pct, "standard": s.goodwill_standard_pct},
+        "plan_fill_rate": card["plan"]["fill_rate"],
+        "baseline_fill_rate": card["baseline"]["fill_rate"],
+        "tuned_fill_rate": card["tuned_baseline"]["fill_rate"],
+        "plan_hero_fill_rate": value.hero_fill_rate(ctxs, {k: v["plan"] for k, v in per_sku.items()}),
+        "baseline_hero_fill_rate": value.hero_fill_rate(ctxs, {k: v["baseline"] for k, v in per_sku.items()}),
+        "tuned_hero_fill_rate": value.hero_fill_rate(ctxs, t_eval["per_sku"]),
+        "planning_service_penalty": round(result.service_penalty_plan, 2),
+    }
     sens = value.sensitivity(ctxs, result.actions, base, ew)
     summary = {
         "as_of": snap.as_of.isoformat(),
@@ -128,14 +172,61 @@ def _plan_core(snap, ctxs: list[SkuContext], pw: World, ew: World, budget: float
         "expected_loss_plan": round(result.expected_loss_plan, 2),
         "n_actions": len(rows),
         "skus_at_risk": sum(1 for d in result.decisions if d.defer_outcome.total_loss > 1),
-        "forecast_methods": {m: sum(1 for c in ctxs if c.forecast.method == m) for m in ("llm", "fallback")},
+        "forecast_methods": {m: sum(1 for c in ctxs if c.forecast.method == m) for m in ("hybrid", "statistical")},
         "scorecard": {k: v for k, v in card.items() if k != "per_sku"},
-        "scorecard_per_sku": card["per_sku"],
+        "scorecard_per_sku": per_sku,
+        "service": service,
+        "tuned_baseline": {**tuned_info, "actions": [a.to_dict() for a in tuned if a.kind != "defer"]},
+        "frontier": _frontier(ctxs, menu, ew, budget),
         "sensitivity": sens,
         "evaluation_world": ew.description,
         "planning_world": pw.description,
     }
     return result, base, rows, summary
+
+
+DIFF_KEYS = ("kind", "order_qty", "expedite", "markdown_lot_id", "discount_pct")
+
+
+def _describe(r: dict | None) -> str:
+    if r is None:
+        return "No action"
+    parts = [KIND_LABEL.get(r["kind"], r["kind"])]
+    if r.get("order_qty"):
+        parts.append(f"{r['order_qty']} units")
+    if r.get("discount_pct"):
+        parts.append(f"{round(r['discount_pct'] * 100)}% off {r['markdown_lot_id']}")
+    return ", ".join(parts)
+
+
+def plan_diff(prev: Plan | None, rows: list[dict], summary: dict) -> dict | None:
+    """What changed versus the previous plan, SKU by SKU."""
+    if prev is None:
+        return None
+    old = {r["sku_id"]: r for r in prev.actions}
+    new = {r["sku_id"]: r for r in rows}
+    changes = []
+    for sku in sorted(set(old) | set(new)):
+        a, b = old.get(sku), new.get(sku)
+        if a is not None and b is not None and all(a.get(k) == b.get(k) for k in DIFF_KEYS):
+            continue
+        status = "added" if a is None else "removed" if b is None else "changed"
+        changes.append({"sku_id": sku, "sku_name": (b or a)["sku_name"], "change": status,
+                        "before": _describe(a), "after": _describe(b),
+                        "cash_delta": round((b or {}).get("cash_outlay", 0) - (a or {}).get("cash_outlay", 0), 2)})
+    ps = prev.summary or {}
+    return {
+        "previous_plan_id": prev.id,
+        "previous_as_of": prev.as_of.isoformat(),
+        "previous_budget": prev.budget,
+        "n_added": sum(1 for c in changes if c["change"] == "added"),
+        "n_removed": sum(1 for c in changes if c["change"] == "removed"),
+        "n_changed": sum(1 for c in changes if c["change"] == "changed"),
+        "unchanged": len(set(old) & set(new)) - sum(1 for c in changes if c["change"] == "changed"),
+        "delta_expected_loss": round(summary["expected_loss_plan"] - ps.get("expected_loss_plan", 0.0), 2),
+        "delta_cash": round(summary["cash_used"] - ps.get("cash_used", 0.0), 2),
+        "changes": changes,
+    }
 
 
 def create_plan(db: Session, budget: float | None = None) -> Plan:
@@ -146,6 +237,9 @@ def create_plan(db: Session, budget: float | None = None) -> Plan:
     pw = state.planning_world(snap, ctxs)
     ew = state.evaluation_world(snap, ctxs)
     result, base, rows, summary = _plan_core(snap, ctxs, pw, ew, budget)
+    prev = db.scalars(select(Plan).order_by(Plan.id.desc()).limit(1)).first()
+    summary["diff"] = plan_diff(prev, rows, summary)
+    summary["revision"] = 0
     method, exp, rec, err = expl.explain(get_llm(), explanation_input(summary, rows))
     if rec.status != "unavailable":
         persist_records(db, [rec])
@@ -154,8 +248,167 @@ def create_plan(db: Session, budget: float | None = None) -> Plan:
                 explanation={"method": method, "error": err, **exp.model_dump()})
     db.add(plan)
     db.commit()
+    queue_evaluation(db, plan)
     alerts_svc.upsert_alerts(db, alerts_svc.compute_alerts(ctxs, pw, snap.as_of))
     return plan
+
+
+# ---------------------------------------------------------------- operator overrides
+
+class PlanConflict(Exception):
+    """The plan can no longer be edited (approved, or the data has moved on)."""
+
+
+class InvalidOverride(ValueError):
+    pass
+
+
+MARKDOWN_RANGE = (0.05, 0.6)
+
+
+def _kind(a: Action) -> str:
+    po = "" if not a.order_qty else ("expedited_po" if a.expedite else "standard_po")
+    if a.markdown is not None:
+        return "markdown" + (f"+{po}" if po else "")
+    return po or "defer"
+
+
+def apply_overrides(db: Session, plan: Plan, overrides: list[dict]) -> Plan:
+    """Operator edits on a draft plan: change order qty, skip a SKU, or set a markdown. The edited plan is
+    re-scored exactly like an optimised one (same planning and evaluation worlds)."""
+    if plan.status != "draft":
+        raise PlanConflict("only draft plans can be edited")
+    snap = state.load_snapshot(db)
+    if snap.as_of != plan.as_of:
+        raise PlanConflict(f"plan was built for {plan.as_of}; data is now as of {snap.as_of}. Rebuild the plan.")
+    ctxs = state.build_contexts(snap)
+    by_ctx = {c.sku_id: c for c in ctxs}
+    old_rows = {r["sku_id"]: r for r in plan.actions}
+    acts = {c.sku_id: (Action.from_dict(old_rows[c.sku_id]["raw"], c.econ.unit_cost, c.expedite_premium_pct)
+                       if c.sku_id in old_rows else defer(c)) for c in ctxs}
+    touched = []
+    for o in overrides:
+        sku = o.get("sku_id")
+        ctx = by_ctx.get(sku)
+        if ctx is None:
+            raise InvalidOverride(f"unknown sku {sku!r}")
+        a = acts[sku]
+        if o.get("skip"):
+            a = defer(ctx)
+        else:
+            qty, md = a.order_qty, a.markdown
+            expedite = bool(o["expedite"]) if o.get("expedite") is not None else a.expedite
+            if o.get("order_qty") is not None:
+                q = float(o["order_qty"])
+                if q < 0:
+                    raise InvalidOverride(f"{sku}: order quantity cannot be negative")
+                qty = 0 if q == 0 else round_order_qty(q, ctx.moq, ctx.case_pack)
+            if o.get("discount_pct") is not None:
+                d = float(o["discount_pct"])
+                if d == 0:
+                    md = None
+                else:
+                    if not MARKDOWN_RANGE[0] - 1e-9 <= d <= MARKDOWN_RANGE[1] + 1e-9:
+                        raise InvalidOverride(f"{sku}: discount must be between {MARKDOWN_RANGE[0]:.0%} and "
+                                              f"{MARKDOWN_RANGE[1]:.0%}")
+                    lots = sorted((l for l in ctx.lots if l.qty > 0), key=lambda l: l.expiry_day)
+                    if md is None and not lots:
+                        raise InvalidOverride(f"{sku}: no stock on hand to mark down")
+                    md = Markdown(md.lot_id if md else lots[0].lot_id, round(d, 2), md.start_day if md else 0)
+            a = Action(sku, "defer", ctx.econ.unit_cost, ctx.expedite_premium_pct, int(qty), bool(qty and expedite), md)
+            a.kind = _kind(a)
+        acts[sku] = a
+        touched.append(sku)
+    actions = [acts[c.sku_id] for c in ctxs]
+    cash = sum(a.cash_outlay for a in actions)
+    if cash > plan.budget + 1e-6:
+        raise InvalidOverride(f"overrides need INR {cash:,.0f}, above the budget of INR {plan.budget:,.0f}")
+    pw = state.planning_world(snap, ctxs)
+    ew = state.evaluation_world(snap, ctxs)
+    _, _, rows, summary = _plan_core(snap, ctxs, pw, ew, plan.budget, actions)
+    old_summary = plan.summary or {}
+    removed_before = {x["sku_id"]: x["original"] for x in old_summary.get("overridden_removed", [])}
+    for r in rows:
+        prev = old_rows.get(r["sku_id"])
+        if r["sku_id"] in touched or (prev and prev.get("overridden")) or r["sku_id"] in removed_before:
+            r["overridden"] = True
+            r["original"] = removed_before.get(r["sku_id"]) or (prev or {}).get("original") or \
+                (_describe(prev) if prev else "No action")
+    summary["diff"] = old_summary.get("diff")
+    summary["revision"] = int(old_summary.get("revision", 0)) + 1
+    log = list(old_summary.get("overrides", []))
+    log.append({"at": utcnow().isoformat(), "items": overrides})
+    summary["overrides"] = log
+    skipped = [{"sku_id": k, "sku_name": v["sku_name"], "original": v.get("original") or _describe(v)}
+               for k, v in old_rows.items() if k not in {r["sku_id"] for r in rows}]
+    in_rows = {r["sku_id"] for r in rows} | {x["sku_id"] for x in skipped}
+    summary["overridden_removed"] = skipped + [x for x in old_summary.get("overridden_removed", [])
+                                               if x["sku_id"] not in in_rows]
+    plan.actions = rows
+    plan.summary = summary
+    plan.explanation = {**(plan.explanation or {}),
+                        "stale_note": "Plan edited by an operator after this explanation was written; "
+                                      "the numbers above the explanation are current."}
+    db.commit()
+    queue_evaluation(db, plan)
+    return plan
+
+
+# ---------------------------------------------------------------- robustness (Monte Carlo, rolling, ablation)
+
+def queue_evaluation(db: Session, plan: Plan) -> Job:
+    job = enqueue(db, "evaluate_plan", {"plan_id": plan.id, "revision": (plan.summary or {}).get("revision", 0)})
+    plan.summary = {**plan.summary, "robustness": {"status": "queued", "job_id": job.id}}
+    db.commit()
+    return job
+
+
+def _plan_actions(plan: Plan, ctxs: list[SkuContext]) -> list[Action]:
+    rows = {r["sku_id"]: r for r in plan.actions}
+    return [Action.from_dict(rows[c.sku_id]["raw"], c.econ.unit_cost, c.expedite_premium_pct)
+            if c.sku_id in rows else defer(c) for c in ctxs]
+
+
+def evaluate_plan(db: Session, plan_id: int, revision: int = 0) -> dict:
+    s = get_settings()
+    plan = db.get(Plan, plan_id)
+    if plan is None:
+        return {"skipped": "plan not found"}
+    snap = state.load_snapshot(db, plan.as_of)
+    ctxs = state.build_contexts(snap)
+    pw = state.planning_world(snap, ctxs)
+    ew = state.evaluation_world(snap, ctxs)
+    acts = _plan_actions(plan, ctxs)
+    policies = {"plan": acts, "static_baseline": baseline_actions(ctxs, plan.budget),
+                "tuned_baseline": tuned_baseline(ctxs, pw, plan.budget)[0]}
+    has_signals = any(e.source == "signal" for c in ctxs for e in state.demand_events(snap, c.sku_id)) or \
+        any(state.delay_events(snap, c.sku_id) for c in ctxs)
+    ablation = {"status": "no confirmed signals",
+                "note": "No operator-confirmed signals are active, so the plan is identical with or without them."}
+    if has_signals:
+        snap2, ctxs2 = state.without_signals(snap, ctxs)
+        nosig = build_plan(ctxs2, state.planning_world(snap2, ctxs2), plan.budget, s.service_level_z)
+        policies["plan_without_signals"] = nosig.actions
+        ev = value.compare(ctxs, acts, nosig.actions, ew)
+        ablation = {"status": "done", "actual_world": {"with_signals": ev["plan"]["total_loss"],
+                                                       "without_signals": ev["baseline"]["total_loss"],
+                                                       "value_of_signals": ev["savings"]},
+                    "n_changed_skus": sum(1 for a, b in zip(acts, nosig.actions) if a.key() != b.key())}
+    worlds = state.monte_carlo_worlds(snap, ctxs, s.eval_worlds)
+    mc = value.monte_carlo(ctxs, policies, worlds)
+    if has_signals and "plan_vs_plan_without_signals" in mc["savings"]:
+        ablation["monte_carlo"] = mc["savings"]["plan_vs_plan_without_signals"]
+    roll = rolling.compare_rolling(snap, ctxs, [ew] + worlds[:s.rolling_worlds], acts, plan.budget,
+                                   s.service_level_z)
+    res = {"status": "done", "computed_at": utcnow().isoformat(), "revision": revision, "monte_carlo": mc,
+           "rolling": roll, "signal_ablation": ablation,
+           "notes": ("Monte Carlo: demand = Poisson(actual x lognormal(0, 0.1) SKU shock); one historical delay "
+                     "drawn per supplier per world. Decisions are fixed; only the world varies.")}
+    db.refresh(plan)
+    if int((plan.summary or {}).get("revision", 0)) == revision:
+        plan.summary = {**plan.summary, "robustness": res}
+        db.commit()
+    return {"plan_id": plan_id, "revision": revision, "n_worlds": mc["n_worlds"]}
 
 
 def approve_plan(db: Session, plan: Plan) -> Plan:
@@ -243,54 +496,88 @@ def run_scenario(db: Session, question: str, budget: float | None) -> dict:
 # ---------------------------------------------------------------- backtest
 
 BACKTEST_DAYS = 14
+BACKTEST_CUTOFFS = (42, 28, 14)
 BACKTEST_SKUS = 10
 
 
 def run_backtest(db: Session) -> dict:
-    """Hold out the last 14 days of sales; compare LLM vs seasonal-naive WAPE on the top-volume SKUs."""
+    """Rolling-origin backtest: forecast 14 days from three past origins (42, 28 and 14 days before as-of) on the
+    top-volume SKUs and score against what actually sold. Models: seasonal naive, seasonal naive with the same
+    calendar-event multipliers, the statistical base (Holt-Winters / Croston + events) and the hybrid (model-tuned
+    event multipliers; latest origin only, to bound model calls). Confirmed operator signals are excluded."""
     snap = state.load_snapshot(db)
     llm = get_llm()
-    as_of = snap.as_of - timedelta(days=BACKTEST_DAYS)
     vols = sorted(snap.products, key=lambda k: -float(snap.history[k][-56:].sum()))[:BACKTEST_SKUS]
-    jobs, actual = [], {}
-    for sku in vols:
-        hist = snap.history[sku][:-BACKTEST_DAYS]
-        actual[sku] = snap.history[sku][-BACKTEST_DAYS:]
-        p = snap.products[sku]
-        rows = [r for r in state.context_rows(snap, sku) if r["start"] < snap.as_of.isoformat()]
-        evs = [e for e in state.demand_events(snap, sku) if not isinstance(e.id, int) and e.start < snap.as_of]
-        summary = fc.build_summary({"sku_id": sku, "name": p.name, "category": p.category}, hist, as_of,
-                                   BACKTEST_DAYS, evs, rows)
-        jobs.append({"sku_id": sku, "summary": summary, "history": hist, "as_of": as_of, "horizon": BACKTEST_DAYS,
-                     "events": evs, "hash": fc.forecast_hash(summary, llm.model if llm else "none")})
-    outs = fc.forecast_many(llm, jobs, get_settings().llm_max_concurrency)
-    per_sku, a_all, l_all, n_all = [], [], [], []
-    llm_ok = 0
-    for j, o in zip(jobs, outs):
-        p10, naive, p90, _ = fc.fallback_forecast(j["history"], as_of, BACKTEST_DAYS, j["events"])
-        a = actual[j["sku_id"]]
-        per_sku.append({"sku_id": j["sku_id"], "llm_method": o.method,
-                        "wape_llm": None if o.method != "llm" else round(value.wape(a, o.p50) or 0, 4),
-                        "wape_naive": round(value.wape(a, naive) or 0, 4)})
-        persist_records(db, [r for r in o.records if r.status != "unavailable"])
-        if o.method == "llm":
-            llm_ok += 1
-            a_all.extend(a)
-            l_all.extend(o.p50)
-            n_all.extend(naive)
-    naive_all_a = np.concatenate([actual[j["sku_id"]] for j in jobs]) if jobs else np.array([])
-    naive_all_f = np.concatenate([fc.fallback_forecast(j["history"], as_of, BACKTEST_DAYS, j["events"])[1] for j in jobs]) if jobs else np.array([])
+    names = ("naive", "naive_events", "statistical", "hybrid")
+    pooled = {m: {"a": [], "f": [], "lo": [], "hi": []} for m in names}
+    per_origin, per_sku = [], []
+    hybrid_jobs = []
+    for cut in BACKTEST_CUTOFFS:
+        as_of = snap.as_of - timedelta(days=cut)
+        o_acc = {m: {"a": [], "f": [], "lo": [], "hi": []} for m in names[:3]}
+        for sku in vols:
+            hist = snap.history[sku][:-cut]
+            actual = snap.history[sku][len(hist):len(hist) + BACKTEST_DAYS]
+            evs = state.demand_events(snap, sku, include_signals=False)
+            n10, n50, n90 = fc.seasonal_naive(hist, BACKTEST_DAYS)
+            m, _ = fc.multipliers(as_of, BACKTEST_DAYS, [e for e in evs if e.end >= as_of])
+            p10, p50, p90, _, _ = fc.statistical_forecast(hist, as_of, BACKTEST_DAYS, evs)
+            for name, f, lo, hi in (("naive", n50, n10, n90), ("naive_events", n50 * m, n10 * m, n90 * m),
+                                    ("statistical", p50, p10, p90)):
+                for acc in (o_acc[name], pooled[name]):
+                    acc["a"].extend(actual)
+                    acc["f"].extend(f)
+                    acc["lo"].extend(lo)
+                    acc["hi"].extend(hi)
+            if cut == BACKTEST_CUTOFFS[-1]:
+                per_sku.append({"sku_id": sku, "wape_naive": _w(actual, n50), "wape_statistical": _w(actual, p50),
+                                "hybrid_method": None, "wape_hybrid": None})
+                if llm is not None:
+                    p = snap.products[sku]
+                    rows = [r for r in state.context_rows(snap, sku) if r["start"] < snap.as_of.isoformat()]
+                    base = fc.statistical_base(fc.clean_history(hist, as_of, evs), BACKTEST_DAYS)
+                    summary = fc.build_summary({"sku_id": sku, "name": p.name, "category": p.category}, hist, as_of,
+                                               BACKTEST_DAYS, evs, rows, base.base_p50)
+                    hybrid_jobs.append({"sku_id": sku, "summary": summary, "history": hist, "as_of": as_of,
+                                        "horizon": BACKTEST_DAYS, "events": evs, "actual": actual,
+                                        "hash": fc.forecast_hash(summary, llm.model)})
+        per_origin.append({"origin": as_of.isoformat(), **{f"wape_{k}": _w(v["a"], v["f"]) for k, v in o_acc.items()},
+                           **{f"coverage_{k}": _cov(v) for k, v in o_acc.items()}})
+    hybrid_ok = 0
+    if hybrid_jobs:
+        outs = fc.forecast_many(llm, hybrid_jobs, get_settings().llm_max_concurrency)
+        for j, o, row in zip(hybrid_jobs, outs, per_sku):
+            persist_records(db, [r for r in o.records if r.status != "unavailable"])
+            row["hybrid_method"] = o.method
+            if o.method == "hybrid":
+                hybrid_ok += 1
+                row["wape_hybrid"] = _w(j["actual"], o.p50)
+                acc = pooled["hybrid"]
+                acc["a"].extend(j["actual"])
+                acc["f"].extend(o.p50)
+                acc["lo"].extend(o.p10)
+                acc["hi"].extend(o.p90)
+    latest = BACKTEST_CUTOFFS[-1]
+    hyb_skus = [r["sku_id"] for r in per_sku if r["hybrid_method"] == "hybrid"]
+    stat_same = [(snap.history[s][-latest:][:BACKTEST_DAYS],
+                  fc.statistical_forecast(snap.history[s][:-latest], snap.as_of - timedelta(days=latest),
+                                          BACKTEST_DAYS, state.demand_events(snap, s, include_signals=False))[1])
+                 for s in hyb_skus]
     result = {
-        "holdout_start": as_of.isoformat(),
+        "origins": [o["origin"] for o in per_origin],
+        "holdout_start": (snap.as_of - timedelta(days=latest)).isoformat(),
         "holdout_days": BACKTEST_DAYS,
-        "skus": len(jobs),
-        "llm_valid_forecasts": llm_ok,
-        "wape_naive_all": round(value.wape(naive_all_a, naive_all_f) or 0, 4),
-        "wape_llm_on_valid": round(value.wape(a_all, l_all) or 0, 4) if llm_ok else None,
-        "wape_naive_on_valid": round(value.wape(a_all, n_all) or 0, 4) if llm_ok else None,
+        "skus": len(vols),
+        "pooled": {k: {"wape": _w(v["a"], v["f"]), "coverage_p10_p90": _cov(v), "n_points": len(v["a"])}
+                   for k, v in pooled.items() if v["a"]},
+        "per_origin": per_origin,
+        "hybrid_valid_forecasts": hybrid_ok,
+        "wape_statistical_on_hybrid_skus": _w(np.concatenate([a for a, _ in stat_same]),
+                                              np.concatenate([f for _, f in stat_same])) if stat_same else None,
         "per_sku": per_sku,
         "computed_at": utcnow().isoformat(),
-        "note": "WAPE = sum|actual - forecast| / sum actual over the hold-out window (lower is better).",
+        "note": ("WAPE = sum|actual - forecast| / sum actual (lower is better); coverage = share of actual days inside "
+                 "the p10-p90 band (target 0.8). Hybrid is scored on the latest origin only."),
     }
     row = db.get(AppState, "backtest")
     if row is None:
@@ -299,6 +586,16 @@ def run_backtest(db: Session) -> dict:
         row.value = result
     db.commit()
     return result
+
+
+def _w(a, f) -> float | None:
+    v = value.wape(a, f)
+    return None if v is None else round(v, 4)
+
+
+def _cov(acc: dict) -> float | None:
+    v = fc.coverage(acc["a"], acc["lo"], acc["hi"]) if acc["a"] else None
+    return None if v is None else round(v, 4)
 
 
 # ---------------------------------------------------------------- jobs (continuous sensing)
@@ -324,6 +621,8 @@ def run_job(job_id: int) -> None:
                 recompute_alerts(db)
             elif job.kind == "backtest":
                 res = run_backtest(db)
+            elif job.kind == "evaluate_plan":
+                res = evaluate_plan(db, int(job.payload["plan_id"]), int(job.payload.get("revision", 0)))
             else:
                 raise ValueError(f"unknown job kind {job.kind}")
             job.result, job.status = res, "done"
@@ -331,6 +630,11 @@ def run_job(job_id: int) -> None:
             db.rollback()
             job = db.get(Job, job_id)
             job.status, job.error = "failed", f"{type(exc).__name__}: {exc}"[:2000]
+            if job.kind == "evaluate_plan":
+                plan = db.get(Plan, int(job.payload.get("plan_id", 0)))
+                if plan is not None and (plan.summary or {}).get("robustness", {}).get("job_id") == job.id:
+                    plan.summary = {**plan.summary, "robustness": {"status": "failed", "job_id": job.id,
+                                                                   "error": job.error}}
         job.finished_at = utcnow()
         db.commit()
     finally:

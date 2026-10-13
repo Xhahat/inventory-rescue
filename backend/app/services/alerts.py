@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 from sqlalchemy import select
@@ -21,7 +22,7 @@ def compute_alerts(ctxs: list[SkuContext], world: World, as_of: date) -> list[di
     for ctx in ctxs:
         sw = world.skus[ctx.sku_id]
         p50 = next((p for w, p in sw.demand_paths if w >= 0.5), sw.demand_paths[0][1])
-        mid = type(sw)([(1.0, p50)], sw.standard_arrival_day, sw.expedite_arrival_day, sw.open_inbound)
+        mid = replace(sw, demand_paths=[(1.0, p50)], supply_cases=[])  # median demand, nominal (P80) supply
         o = evaluate(ctx, defer(ctx), mid)
         arrivals = sorted(i.arrival_day for i in sw.open_inbound if i.arrival_day is not None)
         if o.first_stockout_day is not None:

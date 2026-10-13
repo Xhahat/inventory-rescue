@@ -7,6 +7,8 @@ pydantic-settings==2.15.0
 python-multipart==0.0.32
 numpy==2.5.4
 openai==3.29.0
+google-genai==2.30.0
+google-cloud-storage==3.17.0
 # tests
 pytest==9.1.1
 httpx==0.28.1

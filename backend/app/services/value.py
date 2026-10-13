@@ -1,4 +1,4 @@
-"""Value scorecard: replay plan and baseline in the same evaluation world; sensitivity; WAPE."""
+"""Value scorecard: replay plan and baselines in the same evaluation world(s); sensitivity; Monte Carlo; WAPE."""
 
 from __future__ import annotations
 
@@ -59,3 +59,52 @@ def wape(actual: Sequence[float], forecast: Sequence[float]) -> float | None:
     if denom <= 0:
         return None
     return float(np.abs(a - f).sum() / denom)
+
+
+# ---------------------------------------------------------------- service level
+
+def hero_fill_rate(ctxs: Sequence[SkuContext], per_sku: dict) -> float | None:
+    """Fill rate over priority (hero) SKUs only; per_sku: sku -> Outcome or Outcome.to_dict()."""
+    dem = short = 0.0
+    for c in ctxs:
+        if c.priority != "hero" or c.sku_id not in per_sku:
+            continue
+        o = per_sku[c.sku_id]
+        dem += o["demand_units"] if isinstance(o, dict) else o.demand_units
+        short += o["units_short"] if isinstance(o, dict) else o.units_short
+    return None if dem <= 0 else round(max(0.0, 1 - short / dem), 4)
+
+
+# ---------------------------------------------------------------- Monte Carlo robustness
+
+def _stats(x: Sequence[float]) -> dict:
+    a = np.asarray(x, dtype=float)
+    return {"mean": round(float(a.mean()), 2), "p5": round(float(np.percentile(a, 5)), 2),
+            "p50": round(float(np.percentile(a, 50)), 2), "p95": round(float(np.percentile(a, 95)), 2)}
+
+
+def monte_carlo(ctxs: Sequence[SkuContext], policies: dict[str, Sequence[Action]], worlds: Sequence[World],
+                reference: str = "plan") -> dict:
+    """Replay fixed decisions in many evaluation worlds. Reports loss / fill-rate distributions per policy and,
+    for every other policy, the distribution of savings of `reference` against it and the win rate."""
+    rows: dict[str, dict[str, list[float]]] = {k: {"loss": [], "fill": [], "hero_fill": [], "short": []}
+                                               for k in policies}
+    for w in worlds:
+        for name, acts in policies.items():
+            r = evaluate_actions(ctxs, acts, w)
+            rows[name]["loss"].append(r["totals"]["total_loss"])
+            rows[name]["fill"].append(r["totals"]["fill_rate"] or 0.0)
+            rows[name]["hero_fill"].append(hero_fill_rate(ctxs, r["per_sku"]) or 0.0)
+            rows[name]["short"].append(r["totals"]["units_short"])
+    out = {"n_worlds": len(worlds), "policies": {}, "savings": {}}
+    for name, r in rows.items():
+        out["policies"][name] = {"total_loss": _stats(r["loss"]), "fill_rate": _stats(r["fill"]),
+                                 "hero_fill_rate": _stats(r["hero_fill"]), "units_short": _stats(r["short"])}
+    ref = np.asarray(rows[reference]["loss"])
+    for name, r in rows.items():
+        if name == reference:
+            continue
+        diff = np.asarray(r["loss"]) - ref
+        out["savings"][f"{reference}_vs_{name}"] = {**_stats(diff), "win_rate": round(float(np.mean(diff > 0)), 4),
+                                                    "loss_rate": round(float(np.mean(diff < 0)), 4)}
+    return out

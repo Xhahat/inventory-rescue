@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 import numpy as np
@@ -20,7 +20,7 @@ from ..models import (AppState, ContextEvent, EvaluationDemand, Forecast, Invent
 from . import forecasting as fc
 from .simulator import Inbound, Lot, ProductEconomics
 from .supply import ReceiptRecord, SupplierMetrics, supplier_metrics
-from .world import ForecastBand, OpenPO, SkuContext, SkuWorld, World
+from .world import ForecastBand, OpenPO, SkuContext, SkuWorld, SupplyCase, World
 
 PATH_WEIGHTS = (0.25, 0.5, 0.25)
 
@@ -40,6 +40,8 @@ class Snapshot:
     forecasts: dict[str, Forecast]
     eval_demand: dict[str, list[float]]
     truth_po_delays: dict[str, int]
+    delay_samples: dict[str, list[int]] = None  # supplier -> historical days late (received - expected, >= 0)
+    priority_overrides: dict[str, str] = None  # sku -> hero | standard (manual override)
 
 
 def get_as_of(db: Session) -> date:
@@ -80,8 +82,9 @@ def load_snapshot(db: Session, as_of: date | None = None) -> Snapshot:
     for p in db.scalars(select(PurchaseOrder).where(PurchaseOrder.status == "open").order_by(PurchaseOrder.po_id)):
         open_pos[p.sku_id].append(p)
 
-    context = list(db.scalars(select(ContextEvent).where(
-        ContextEvent.end_date >= as_of - timedelta(days=56), ContextEvent.start_date < as_of + timedelta(days=H))))
+    # whole history window: past events are divided out of history before fitting the statistical model
+    context = list(db.scalars(select(ContextEvent).where(ContextEvent.start_date < as_of + timedelta(days=H))
+                              .order_by(ContextEvent.start_date, ContextEvent.id)))
     confirmed = list(db.scalars(select(SignalEvent).where(SignalEvent.status == "confirmed").order_by(SignalEvent.id)))
 
     forecasts: dict[str, Forecast] = {}
@@ -99,9 +102,13 @@ def load_snapshot(db: Session, as_of: date | None = None) -> Snapshot:
 
     truth = db.get(AppState, "evaluation_truth")
     truth_delays = dict((truth.value or {}).get("po_extra_delay_days", {})) if truth else {}
+    delay_samples = {sid: sorted(max(0, (r.received_date - r.expected_date).days) for r in rs)
+                     for sid, rs in receipts.items()}
+    pri = db.get(AppState, "sku_priority")
+    overrides = {k: v for k, v in dict((pri.value or {}) if pri else {}).items() if v in ("hero", "standard")}
 
     return Snapshot(as_of, H, products, suppliers, metrics, history, lots, open_pos, context, confirmed, forecasts,
-                    eval_demand, truth_delays)
+                    eval_demand, truth_delays, delay_samples, overrides)
 
 
 # ---------------------------------------------------------------- events
@@ -110,20 +117,23 @@ def _active(e: SignalEvent, as_of: date) -> bool:
     return e.end_date is None or e.end_date >= as_of
 
 
-def demand_events(snap: Snapshot, sku_id: str) -> list[fc.EventLike]:
+def demand_events(snap: Snapshot, sku_id: str, include_signals: bool = True) -> list[fc.EventLike]:
+    """Confirmed demand signals (fixed multipliers) + SKU/category-scoped context events (priors = 1 + value).
+    Context events without a SKU or category scope are informational only."""
     p = snap.products[sku_id]
     out = []
-    for e in snap.confirmed:
-        if e.event_type in ("demand_spike", "demand_drop") and sku_id in (e.sku_ids or []) and e.magnitude > 0:
-            start = e.start_date or snap.as_of
-            end = e.end_date or (start + timedelta(days=fc.DEFAULT_EVENT_DAYS - 1))
-            out.append(fc.EventLike(e.id, e.event_type, start, end, float(e.magnitude),
-                                    f"Confirmed signal EV-{e.id}: {e.event_type.replace('_', ' ')}"))
+    if include_signals:
+        for e in snap.confirmed:
+            if e.event_type in ("demand_spike", "demand_drop") and sku_id in (e.sku_ids or []) and e.magnitude > 0:
+                start = e.start_date or snap.as_of
+                end = e.end_date or (start + timedelta(days=fc.DEFAULT_EVENT_DAYS - 1))
+                out.append(fc.EventLike(e.id, e.event_type, start, end, float(e.magnitude),
+                                        f"Confirmed signal EV-{e.id}: {e.event_type.replace('_', ' ')}"))
     for c in snap.context:
-        if c.kind == "promotion" and (c.sku_id == sku_id or (c.sku_id is None and c.category == p.category)) \
-                and c.end_date >= snap.as_of:
-            out.append(fc.EventLike(f"PROMO-{c.id}", "promotion", c.start_date, c.end_date, 1.0 + c.value,
-                                    f"Planned promotion PROMO-{c.id}: {c.description}"))
+        scoped = c.sku_id == sku_id or (c.sku_id is None and c.category is not None and c.category == p.category)
+        if scoped and c.value and 1.0 + c.value > 0:
+            out.append(fc.EventLike(f"CTX-{c.id}", c.kind, c.start_date, c.end_date, 1.0 + float(c.value),
+                                    f"{c.kind.capitalize()} CTX-{c.id}: {c.description}", "context"))
     return out
 
 
@@ -136,6 +146,8 @@ def context_rows(snap: Snapshot, sku_id: str) -> list[dict]:
     p = snap.products[sku_id]
     rows = []
     for c in snap.context:
+        if c.end_date < snap.as_of - timedelta(days=56):
+            continue
         if c.sku_id not in (None, sku_id):
             continue
         if c.category not in (None, p.category):
@@ -155,7 +167,9 @@ def forecast_job(snap: Snapshot, sku_id: str, model: str) -> dict:
     events = demand_events(snap, sku_id)
     sku_info = {"sku_id": sku_id, "name": p.name, "category": p.category, "shelf_life_days": p.shelf_life_days,
                 "unit_price_inr": p.unit_price}
-    summary = fc.build_summary(sku_info, snap.history[sku_id], snap.as_of, snap.horizon, events, context_rows(snap, sku_id))
+    base = fc.statistical_forecast(snap.history[sku_id], snap.as_of, snap.horizon, events)[4]
+    summary = fc.build_summary(sku_info, snap.history[sku_id], snap.as_of, snap.horizon, events,
+                               context_rows(snap, sku_id), base.base_p50)
     return {"sku_id": sku_id, "summary": summary, "history": snap.history[sku_id], "as_of": snap.as_of,
             "horizon": snap.horizon, "events": events, "hash": fc.forecast_hash(summary, model)}
 
@@ -192,7 +206,7 @@ def refresh_forecasts(db: Session, sku_ids: list[str] | None = None, force: bool
             continue
         job = forecast_job(snap, sku, model)
         existing = snap.forecasts.get(sku)
-        reusable = (lambda f: f is not None and (f.method == "llm" or llm is None))
+        reusable = (lambda f: f is not None and (f.method == "hybrid" or llm is None))
         if not force and reusable(existing) and existing.input_hash == job["hash"]:
             reused.append(sku)
             continue
@@ -207,7 +221,7 @@ def refresh_forecasts(db: Session, sku_ids: list[str] | None = None, force: bool
             continue
         file_hit = None if force else _cache_get(job["hash"])
         if file_hit is not None:
-            db.add(Forecast(sku_id=sku, as_of=snap.as_of, input_hash=job["hash"], method="llm", fallback_reason=None,
+            db.add(Forecast(sku_id=sku, as_of=snap.as_of, input_hash=job["hash"], method="hybrid", fallback_reason=None,
                             p10=file_hit["p10"], p50=file_hit["p50"], p90=file_hit["p90"],
                             drivers=file_hit.get("drivers", [])))
             reused.append(sku)
@@ -220,7 +234,7 @@ def refresh_forecasts(db: Session, sku_ids: list[str] | None = None, force: bool
                         fallback_reason=o.fallback_reason, p10=o.p10, p50=o.p50, p90=o.p90, drivers=o.drivers))
         persist_records(db, [r for r in o.records if r.status != "unavailable"])
         methods[o.sku_id] = o.method
-        if o.method == "llm":
+        if o.method == "hybrid":
             _cache_put(o.input_hash, {"p10": o.p10, "p50": o.p50, "p90": o.p90, "drivers": o.drivers})
     db.commit()
     return {"as_of": snap.as_of.isoformat(), "computed": methods, "reused": reused}
@@ -231,14 +245,14 @@ def _cache_get(h: str) -> dict | None:
         st = get_storage()
         key = f"cache/forecast/{h}.json"
         return json.loads(st.get(key)) if st.exists(key) else None
-    except (OSError, ValueError):
+    except Exception:  # cache only: local OSError, bad JSON or Cloud Storage API errors
         return None
 
 
 def _cache_put(h: str, value: dict) -> None:
     try:
         get_storage().put(f"cache/forecast/{h}.json", json.dumps(value).encode("utf-8"))
-    except OSError:
+    except Exception:  # cache only
         pass
 
 
@@ -246,17 +260,37 @@ def band_for(snap: Snapshot, sku_id: str) -> ForecastBand:
     f = snap.forecasts.get(sku_id)
     if f is not None:
         return ForecastBand(list(f.p10), list(f.p50), list(f.p90), f.method, f.id, list(f.drivers or []))
-    p10, p50, p90, drivers = fc.fallback_forecast(snap.history[sku_id], snap.as_of, snap.horizon,
-                                                  demand_events(snap, sku_id))
-    return ForecastBand(p10, p50, p90, "fallback", None, drivers)
+    p10, p50, p90, drivers, _ = fc.statistical_forecast(snap.history[sku_id], snap.as_of, snap.horizon,
+                                                        demand_events(snap, sku_id))
+    return ForecastBand(p10, p50, p90, "statistical", None, drivers)
 
 
 # ---------------------------------------------------------------- contexts & worlds
 
+def sku_priorities(snap: Snapshot) -> dict[str, dict]:
+    """Hero SKUs = top `hero_share` by trailing-28-day revenue, unless manually overridden."""
+    s = get_settings()
+    rev = {sku: float(np.sum(snap.history[sku][-28:])) * p.unit_price for sku, p in snap.products.items()}
+    n_hero = max(1, int(round(len(rev) * s.hero_share))) if rev else 0
+    ranked = sorted(rev, key=lambda k: (-rev[k], k))
+    auto = {sku: ("hero" if i < n_hero else "standard") for i, sku in enumerate(ranked)}
+    overrides = snap.priority_overrides or {}
+    return {sku: {"priority": overrides.get(sku, auto[sku]), "auto": auto[sku], "overridden": sku in overrides,
+                  "revenue_28d": round(rev[sku], 2)} for sku in snap.products}
+
+
 def build_contexts(snap: Snapshot) -> list[SkuContext]:
+    s = get_settings()
+    pri = sku_priorities(snap)
+    margins: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for sku, p in snap.products.items():
+        margins[p.category].append((sku, p.unit_price - p.unit_cost))
     ctxs = []
     for sku, p in snap.products.items():
         sup = snap.suppliers[p.supplier_id]
+        others = [m for k, m in margins[p.category] if k != sku]
+        priority = pri[sku]["priority"]
+        pct = s.goodwill_hero_pct if priority == "hero" else s.goodwill_standard_pct
         ctxs.append(SkuContext(
             sku_id=sku, name=p.name, category=p.category, supplier_id=p.supplier_id,
             econ=ProductEconomics(p.unit_cost, p.unit_price, p.shelf_life_days),
@@ -266,19 +300,39 @@ def build_contexts(snap: Snapshot) -> list[SkuContext]:
             open_pos=[OpenPO(o.po_id, float(o.qty), (o.expected_date - snap.as_of).days, o.supplier_id)
                       for o in snap.open_pos.get(sku, [])],
             history=snap.history[sku], metrics=snap.metrics[p.supplier_id], forecast=band_for(snap, sku),
+            priority=priority, goodwill_per_unit=pct * p.unit_price,
+            substitute_margin=float(np.mean(others)) if others else 0.0,
         ))
     return ctxs
 
 
+# Lead-time uncertainty: three supplier-delay cases from the empirical delay distribution.
+SUPPLY_QUANTILES = ((0.3, 15, "early (P15 delay)"), (0.4, 50, "typical (P50 delay)"), (0.3, 85, "late (P85 delay)"))
+
+
 def _planning_supply(snap: Snapshot, ctx: SkuContext) -> tuple[int, int, list[Inbound], list[str], list[int]]:
-    """Open POs slip by the supplier's P80 delay; a confirmed delay signal replaces that with the stated delay
-    (whichever is larger). New orders keep the effective lead time (stated + P80)."""
+    """Nominal supply (shown to users): open POs slip by the supplier's P80 delay; a confirmed delay signal
+    replaces that with the stated delay (whichever is larger). New orders keep the effective lead time (stated + P80)."""
     delays = delay_events(snap, ctx.sku_id)
     extra = int(max((math.ceil(e.magnitude) for e in delays), default=0))
     p80 = int(math.ceil(ctx.metrics.p80_delay_days - 1e-9))
     notes = [f"Confirmed signal EV-{e.id}: supplier delay +{e.magnitude:g} days on open POs" for e in delays]
     inbound = [Inbound(o.po_id, o.qty, o.expected_day + max(p80, extra)) for o in ctx.open_pos]
     return ctx.metrics.effective_lead_time_days, ctx.expedite_lead_time, inbound, notes, [e.id for e in delays]
+
+
+def supply_cases(snap: Snapshot, ctx: SkuContext) -> list[SupplyCase]:
+    """Early / typical / late supplier cases (weights 30/40/30). In each case every PO from the supplier slips by
+    the same delay (delays are correlated within a supplier); a confirmed delay signal is a floor for open POs.
+    Expedited freight is assumed on time."""
+    samples = (snap.delay_samples or {}).get(ctx.supplier_id) or [0]
+    extra = int(max((math.ceil(e.magnitude) for e in delay_events(snap, ctx.sku_id)), default=0))
+    out = []
+    for w, q, label in SUPPLY_QUANTILES:
+        d = int(math.ceil(float(np.percentile(samples, q)) - 1e-9))
+        inbound = tuple(Inbound(o.po_id, o.qty, o.expected_day + max(d, extra)) for o in ctx.open_pos)
+        out.append(SupplyCase(w, ctx.stated_lead_time + d, inbound, f"{label}: +{d}d"))
+    return out
 
 
 def band_paths(p10, p50, p90) -> list[tuple[float, np.ndarray]]:
@@ -304,9 +358,11 @@ def planning_world(snap: Snapshot, ctxs: list[SkuContext]) -> World:
             if isinstance(e.id, int):
                 notes.append(f"Forecast includes confirmed signal EV-{e.id} (demand x{e.multiplier:g})")
                 ids.append(e.id)
-        skus[ctx.sku_id] = SkuWorld(paths, std, exp, inbound, notes, ids)
+        skus[ctx.sku_id] = SkuWorld(paths, std, exp, inbound, notes, ids, supply_cases(snap, ctx))
     return World("planning", skus, {"demand": "forecast low/mid/high paths (cumulative p10/p50/p90) weighted 25/50/25",
-                                    "lead_time": "open POs: expected + max(P80 delay, confirmed delay); new POs: stated + P80"})
+                                    "lead_time": "3 supplier-delay cases (P15/P50/P85 of historical delays, weighted "
+                                                 "30/40/30), same delay for all POs of a supplier; open POs at least "
+                                                 "the confirmed delay; expedite on time. Displayed arrival: stated + P80"})
 
 
 def evaluation_world(snap: Snapshot, ctxs: list[SkuContext]) -> World:
@@ -327,3 +383,44 @@ def evaluation_world(snap: Snapshot, ctxs: list[SkuContext]) -> World:
                                       "lead_time": "open POs: seeded actual arrival (else expected + mean delay); "
                                                    "new POs: stated + mean historical delay; expedite on time",
                                       "note": "Same world for plan and baseline; independent of confirmed signals"})
+
+
+MC_DEMAND_SHOCK_SIGMA = 0.1
+
+
+def monte_carlo_world(snap: Snapshot, ctxs: list[SkuContext], rng: np.random.Generator, name: str = "mc") -> World:
+    """One random evaluation world around the 'actual' one: demand = Poisson(actual x per-SKU lognormal shock);
+    each supplier draws one historical delay that applies to its new POs and to open POs without a known outcome
+    (open POs whose actual arrival is known keep it). Expedite on time."""
+    sup_delay = {sid: int(rng.choice((snap.delay_samples or {}).get(sid) or [0])) for sid in snap.suppliers}
+    skus = {}
+    for ctx in ctxs:
+        mean = np.array(snap.eval_demand.get(ctx.sku_id, ctx.forecast.p50), dtype=float)
+        path = rng.poisson(np.maximum(0.0, mean) * rng.lognormal(0.0, MC_DEMAND_SHOCK_SIGMA)).astype(float)
+        d = sup_delay.get(ctx.supplier_id, 0)
+        inbound = [Inbound(o.po_id, o.qty, o.expected_day + int(snap.truth_po_delays.get(o.po_id, d)))
+                   for o in ctx.open_pos]
+        skus[ctx.sku_id] = SkuWorld([(1.0, path)], ctx.stated_lead_time + d, ctx.expedite_lead_time, inbound)
+    return World(name, skus, {"supplier_delays": sup_delay})
+
+
+def monte_carlo_worlds(snap: Snapshot, ctxs: list[SkuContext], n: int, seed: int = 7) -> list[World]:
+    rng = np.random.default_rng(seed)
+    return [monte_carlo_world(snap, ctxs, rng, f"mc-{i}") for i in range(n)]
+
+
+def without_signals(snap: Snapshot, ctxs: list[SkuContext]) -> tuple[Snapshot, list[SkuContext]]:
+    """Counterfactual for the 'value of signals' ablation: confirmed demand-signal multipliers divided out of
+    the forecasts and confirmed supplier-delay signals dropped. Everything else is identical."""
+    out = []
+    for ctx in ctxs:
+        sig = [e for e in demand_events(snap, ctx.sku_id) if e.source == "signal"]
+        if not sig:
+            out.append(ctx)
+            continue
+        m, _ = fc.multipliers(snap.as_of, snap.horizon, sig)
+        f = ctx.forecast
+        band = ForecastBand(*(list(np.round(np.asarray(x) / m, 2)) for x in (f.p10, f.p50, f.p90)),
+                            f.method, f.forecast_id, [d for d in f.drivers if "Confirmed signal" not in d])
+        out.append(replace(ctx, forecast=band))
+    return replace(snap, confirmed=[]), out

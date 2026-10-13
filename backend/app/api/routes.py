@@ -15,7 +15,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..llm.client import get_llm, persist_records
 from ..models import Alert, AppState, Forecast, Job, LLMCall, Message, Plan, Product, Sale, SignalEvent, utcnow
-from ..schemas import DecisionIn, MessageIn, PlanIn, ReforecastIn, ScenarioIn
+from ..schemas import DecisionIn, MessageIn, OverridesIn, PlanIn, PriorityIn, ReforecastIn, ScenarioIn
 from ..services import plans as plan_svc
 from ..services import signals as sig_svc
 from ..services import state
@@ -38,7 +38,8 @@ def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
     s = get_settings()
     return {"status": "ok", "db": db.get_bind().dialect.name, "llm_configured": s.llm_configured,
-            "llm_model": s.llm_model if s.llm_configured else None}
+            "llm_provider": s.resolved_llm_provider if s.llm_configured else None,
+            "llm_model": s.active_llm_model if s.llm_configured else None, "storage": s.storage_backend}
 
 
 @router.get("/api/overview")
@@ -52,8 +53,8 @@ def overview(db: Session = Depends(get_db)):
         "default_budget": get_settings().default_budget_inr,
         "n_skus": len(snap.products),
         "forecasts": {"fresh": sum(1 for v in fresh.values() if v["fresh"]), "total": len(fresh),
-                      "llm": sum(1 for v in fresh.values() if v["method"] == "llm"),
-                      "fallback": sum(1 for v in fresh.values() if v["method"] == "fallback"),
+                      "hybrid": sum(1 for v in fresh.values() if v["method"] == "hybrid"),
+                      "statistical": sum(1 for v in fresh.values() if v["method"] == "statistical"),
                       "latest": max((v["created_at"] for v in fresh.values() if v["created_at"]), default=None)},
         "pending_signals": db.scalar(select(func.count()).select_from(SignalEvent).where(SignalEvent.status == "pending")),
         "alerts": [_alert(a) for a in alerts],
@@ -84,6 +85,7 @@ def list_alerts(db: Session = Depends(get_db)):
 def list_skus(db: Session = Depends(get_db)):
     snap = state.load_snapshot(db)
     fresh = state.freshness(snap)
+    pri = state.sku_priorities(snap)
     out = []
     for sku, p in snap.products.items():
         on_hand = sum(l.qty for l in snap.lots.get(sku, []))
@@ -91,8 +93,28 @@ def list_skus(db: Session = Depends(get_db)):
         out.append({"sku_id": sku, "name": p.name, "category": p.category, "supplier_id": p.supplier_id,
                     "on_hand": on_hand, "open_po_qty": sum(o.qty for o in snap.open_pos.get(sku, [])),
                     "avg_daily_28d": round(avg, 2), "days_of_cover": round(on_hand / avg, 1) if avg else None,
-                    "forecast_method": fresh[sku]["method"], "forecast_fresh": fresh[sku]["fresh"]})
+                    "forecast_method": fresh[sku]["method"], "forecast_fresh": fresh[sku]["fresh"],
+                    "priority": pri[sku]["priority"], "priority_overridden": pri[sku]["overridden"]})
     return out
+
+
+@router.put("/api/skus/{sku_id}/priority")
+def set_priority(sku_id: str, body: PriorityIn, db: Session = Depends(get_db)):
+    """Mark a SKU as hero (stockouts carry a higher service penalty) or standard; 'auto' = top-revenue rule."""
+    snap = state.load_snapshot(db)
+    _sku_or_404(snap, sku_id)
+    row = db.get(AppState, "sku_priority")
+    cur = dict(row.value) if row else {}
+    if body.priority == "auto":
+        cur.pop(sku_id, None)
+    else:
+        cur[sku_id] = body.priority
+    if row is None:
+        db.add(AppState(key="sku_priority", value=cur))
+    else:
+        row.value = cur
+    db.commit()
+    return state.sku_priorities(state.load_snapshot(db))[sku_id]
 
 
 @router.get("/api/skus/{sku_id}")
@@ -111,14 +133,18 @@ def sku_detail(sku_id: str, db: Session = Depends(get_db)):
     hist_start = snap.as_of - timedelta(days=len(hist))
     sup = snap.suppliers[p.supplier_id]
     alerts = db.scalars(select(Alert).where(Alert.active.is_(True), Alert.entity_id.in_([sku_id, p.supplier_id]))).all()
+    pri = state.sku_priorities(snap)[sku_id]
     return {
         "sku_id": sku_id, "name": p.name, "category": p.category, "unit_cost": p.unit_cost, "unit_price": p.unit_price,
         "case_pack": p.case_pack, "moq": p.moq, "shelf_life_days": p.shelf_life_days,
         "as_of": snap.as_of.isoformat(),
+        "priority": {**pri, "goodwill_per_unit": round(ctx.goodwill_per_unit, 2)},
+        "supply_cases": [{"label": c.label, "weight": c.weight, "new_po_arrival_day": c.standard_arrival_day}
+                         for c in sw.supply_cases],
         "history": [{"date": (hist_start + timedelta(days=i)).isoformat(), "units": float(v)} for i, v in enumerate(hist)],
         "forecast": {
             "id": ctx.forecast.forecast_id, "method": ctx.forecast.method,
-            "fallback_reason": f.fallback_reason if f else "no stored forecast; computed seasonal-naive on the fly",
+            "fallback_reason": f.fallback_reason if f else "no stored forecast; computed the statistical forecast on the fly",
             "fresh": state.freshness(snap)[sku_id]["fresh"],
             "created_at": f.created_at.isoformat() if f else None,
             "drivers": ctx.forecast.drivers,
@@ -338,8 +364,35 @@ def _plan(p: Plan) -> dict:
 
 
 @router.post("/api/plans")
-def create_plan(body: PlanIn, db: Session = Depends(get_db)):
-    return _plan(plan_svc.create_plan(db, body.budget))
+def create_plan(body: PlanIn, bg: BackgroundTasks, db: Session = Depends(get_db)):
+    p = plan_svc.create_plan(db, body.budget)
+    bg.add_task(plan_svc.run_job, p.summary["robustness"]["job_id"])
+    return _plan(p)
+
+
+@router.post("/api/plans/{plan_id}/overrides")
+def override_plan(plan_id: int, body: OverridesIn, bg: BackgroundTasks, db: Session = Depends(get_db)):
+    p = db.get(Plan, plan_id)
+    if p is None:
+        raise HTTPException(404, "plan not found")
+    try:
+        p = plan_svc.apply_overrides(db, p, [i.model_dump() for i in body.items])
+    except plan_svc.PlanConflict as exc:
+        raise HTTPException(409, str(exc))
+    except plan_svc.InvalidOverride as exc:
+        raise HTTPException(400, str(exc))
+    bg.add_task(plan_svc.run_job, p.summary["robustness"]["job_id"])
+    return _plan(p)
+
+
+@router.post("/api/plans/{plan_id}/evaluate")
+def reevaluate_plan(plan_id: int, bg: BackgroundTasks, db: Session = Depends(get_db)):
+    p = db.get(Plan, plan_id)
+    if p is None:
+        raise HTTPException(404, "plan not found")
+    job = plan_svc.queue_evaluation(db, p)
+    bg.add_task(plan_svc.run_job, job.id)
+    return _job(job)
 
 
 @router.get("/api/plans/latest")

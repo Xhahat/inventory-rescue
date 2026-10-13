@@ -12,7 +12,7 @@ export type Job = {
 
 export type Overview = {
   as_of: string; default_budget: number; n_skus: number;
-  forecasts: { fresh: number; total: number; llm: number; fallback: number; latest: string | null };
+  forecasts: { fresh: number; total: number; hybrid: number; statistical: number; latest: string | null };
   pending_signals: number; alerts: Alert[]; active_jobs: Job[]; llm_configured: boolean;
 };
 
@@ -24,13 +24,49 @@ export type PlanAction = {
   markdown_lot_id: string | null; discount_pct: number | null; cash_outlay: number; expedite_premium: number;
   expected_loss_if_deferred: number; expected_loss_with_action: number; loss_avoided: number;
   forecast_method: string; reasons: string[]; record_ids: string[];
+  raw: { order_qty: number; expedite: boolean; markdown: { lot_id: string; discount_pct: number } | null };
+  overridden?: boolean; original?: string;
 };
 
 export type Totals = {
   lost_margin: number; expiry_writeoff: number; markdown_cost: number; expedite_premium: number;
   cash_outlay: number; units_short: number; expired_units: number; markdown_units: number;
   ending_units: number; ending_value: number; total_loss: number; stockout_sku_days: number;
+  cannibalisation: number; demand_units: number; fill_rate: number | null;
 };
+
+export type Dist = { mean: number; p5: number; p50: number; p95: number };
+export type FrontierRow = {
+  budget: number; cash_used: number; planning_loss: number; planning_objective: number; eval_loss: number;
+  eval_fill_rate: number | null; eval_hero_fill_rate: number | null; n_actions: number; is_current: boolean;
+};
+export type RollingRun = {
+  total_loss: number; fill_rate: number | null; hero_fill_rate: number | null; cash_spent: number; orders_placed: number;
+};
+export type Robustness = {
+  status: 'queued' | 'done' | 'failed'; job_id?: number; error?: string; computed_at?: string; notes?: string;
+  monte_carlo?: {
+    n_worlds: number;
+    policies: Record<string, { total_loss: Dist; fill_rate: Dist; hero_fill_rate: Dist; units_short: Dist }>;
+    savings: Record<string, Dist & { win_rate: number; loss_rate: number }>;
+  };
+  rolling?: {
+    review_days: number[]; actual_world: Record<string, RollingRun>; n_mc_worlds: number;
+    mc: Record<string, { total_loss: Dist; fill_rate: Dist }>;
+    comparisons: Record<string, Dist & { win_rate: number }>; notes: string;
+  };
+  signal_ablation?: {
+    status: string; note?: string; n_changed_skus?: number;
+    actual_world?: { with_signals: number; without_signals: number; value_of_signals: number };
+    monte_carlo?: Dist & { win_rate: number };
+  };
+};
+export type PlanDiff = {
+  previous_plan_id: number; previous_as_of: string; previous_budget: number; n_added: number; n_removed: number;
+  n_changed: number; unchanged: number; delta_expected_loss: number; delta_cash: number;
+  changes: { sku_id: string; sku_name: string; change: string; before: string; after: string; cash_delta: number }[];
+};
+export type OverrideItem = { sku_id: string; order_qty?: number; skip?: boolean; discount_pct?: number };
 
 export type Sensitivity = { case: string; plan_total_loss: number; baseline_total_loss: number; savings: number };
 
@@ -42,12 +78,32 @@ export type Plan = {
     budget: number; cash_used: number; cash_remaining: number; expected_loss_no_action: number;
     expected_loss_plan: number; n_actions: number; skus_at_risk: number;
     forecast_methods: Record<string, number>;
-    scorecard: { world: string; plan: Totals; baseline: Totals; savings: number };
-    scorecard_per_sku: Record<string, { plan: Totals; baseline: Totals }>;
+    scorecard: {
+      world: string; plan: Totals; baseline: Totals; savings: number; tuned_baseline: Totals; savings_vs_tuned: number;
+    };
+    scorecard_per_sku: Record<string, { plan: Totals; baseline: Totals; tuned_baseline: Totals }>;
     sensitivity: Sensitivity[];
+    service: {
+      hero_skus: string[]; goodwill_pct: { hero: number; standard: number };
+      plan_fill_rate: number | null; baseline_fill_rate: number | null; tuned_fill_rate: number | null;
+      plan_hero_fill_rate: number | null; baseline_hero_fill_rate: number | null; tuned_hero_fill_rate: number | null;
+      planning_service_penalty: number;
+    };
+    tuned_baseline: {
+      safety_days: number; cover_days: number; planning_world_loss: number; grid: string;
+      actions: { sku_id: string; kind: string; order_qty: number; cash_outlay: number }[];
+    };
+    frontier: FrontierRow[];
+    robustness?: Robustness;
+    diff?: PlanDiff | null;
+    revision?: number;
+    overrides?: { at: string; items: OverrideItem[] }[];
+    overridden_removed?: { sku_id: string; sku_name: string; original: string }[];
     evaluation_world: Record<string, unknown>; planning_world: Record<string, unknown>;
   };
-  explanation: { method: string; error: string | null; summary: string; bullets: { text: string; cites: string[] }[] };
+  explanation: {
+    method: string; error: string | null; summary: string; bullets: { text: string; cites: string[] }[]; stale_note?: string;
+  };
   exports: { po_csv?: string; markdown_csv?: string; po_lines?: number; markdown_lines?: number } | null;
 };
 
@@ -62,11 +118,16 @@ export type IngestResult = { message_id: number; extraction_method: string; llm_
 export type SkuRow = {
   sku_id: string; name: string; category: string; supplier_id: string; on_hand: number; open_po_qty: number;
   avg_daily_28d: number; days_of_cover: number | null; forecast_method: string; forecast_fresh: boolean;
+  priority: string; priority_overridden: boolean;
 };
+
+export type Priority = { priority: string; auto: string; overridden: boolean; revenue_28d: number };
 
 export type SkuDetail = {
   sku_id: string; name: string; category: string; unit_cost: number; unit_price: number; case_pack: number;
   moq: number; shelf_life_days: number; as_of: string;
+  priority: Priority & { goodwill_per_unit: number };
+  supply_cases: { label: string; weight: number; new_po_arrival_day: number | null }[];
   history: { date: string; units: number }[];
   forecast: {
     id: number | null; method: string; fallback_reason: string | null; fresh: boolean; created_at: string | null;
@@ -88,9 +149,14 @@ export type ScenarioResult = {
 };
 
 export type Backtest = {
-  holdout_start: string; holdout_days: number; skus: number; llm_valid_forecasts: number;
-  wape_naive_all: number; wape_llm_on_valid: number | null; wape_naive_on_valid: number | null;
-  per_sku: { sku_id: string; llm_method: string; wape_llm: number | null; wape_naive: number }[];
+  origins: string[]; holdout_start: string; holdout_days: number; skus: number; hybrid_valid_forecasts: number;
+  pooled: Record<string, { wape: number | null; coverage_p10_p90: number | null; n_points: number }>;
+  per_origin: Record<string, string | number | null>[];
+  wape_statistical_on_hybrid_skus: number | null;
+  per_sku: {
+    sku_id: string; wape_naive: number | null; wape_statistical: number | null; hybrid_method: string | null;
+    wape_hybrid: number | null;
+  }[];
   computed_at: string; note: string;
 };
 
@@ -167,6 +233,10 @@ export const api = {
   },
   createPlan: (budget: number) => post<Plan>('/api/plans', { budget }),
   approvePlan: (id: number) => post<Plan>(`/api/plans/${id}/approve`),
+  plan: (id: number) => req<Plan>(`/api/plans/${id}`),
+  overridePlan: (id: number, items: OverrideItem[]) => post<Plan>(`/api/plans/${id}/overrides`, { items }),
+  setPriority: (sku: string, priority: 'hero' | 'standard' | 'auto') =>
+    req<Priority>(`/api/skus/${encodeURIComponent(sku)}/priority`, { method: 'PUT', body: JSON.stringify({ priority }) }),
   scenario: (question: string, budget: number | null) => post<ScenarioResult>('/api/scenarios', { question, budget }),
   backtest: () => req<Backtest | null>('/api/backtest'),
   runBacktest: () => post<Job>('/api/backtest'),

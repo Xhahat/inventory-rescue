@@ -39,7 +39,7 @@ def test_health_and_overview(client):
     skus = client.get("/api/skus").json()
     assert len(skus) == 30
     d = client.get("/api/skus/SKU-013").json()
-    assert d["lots"] and d["forecast"]["method"] == "fallback" and d["reorder"]["reorder_point"] > 0
+    assert d["lots"] and d["forecast"]["method"] == "statistical" and d["reorder"]["reorder_point"] > 0
     assert client.get("/api/skus/NOPE").status_code == 404
     assert "SKU-019" in [p["sku_id"] for p in client.get("/api/search", params={"q": "peanut butter"}).json()["products"]]
 
@@ -62,9 +62,9 @@ def test_full_flow_with_fake_llm(client, fake_llm):
     assert conf["signal"]["status"] == "confirmed" and conf["job"]
     job = client.get(f"/api/jobs/{conf['job']['id']}").json()
     assert job["status"] == "done", job
-    assert job["result"]["computed"] == {"SKU-019": "fallback"}
+    assert job["result"]["computed"] == {"SKU-019": "statistical"}
     sku = client.get("/api/skus/SKU-019").json()
-    assert sku["forecast"]["method"] == "fallback"
+    assert sku["forecast"]["method"] == "statistical"
     assert sku["forecast"]["fallback_reason"].startswith("invalid output")
     assert any("EV-" in d for d in sku["forecast"]["drivers"])
 
@@ -123,7 +123,70 @@ def test_scenario_and_backtest(client):
     job = client.post("/api/backtest").json()
     assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "done"
     bt = client.get("/api/backtest").json()
-    assert bt["skus"] == 10 and bt["llm_valid_forecasts"] == 0 and bt["wape_naive_all"] > 0
+    assert bt["skus"] == 10 and bt["hybrid_valid_forecasts"] == 0 and len(bt["per_origin"]) == 3
+    assert bt["pooled"]["statistical"]["wape"] > 0 and 0 < bt["pooled"]["statistical"]["coverage_p10_p90"] <= 1
+    assert "hybrid" not in bt["pooled"]
+
+
+def test_plan_robustness_frontier_overrides_and_diff(client):
+    plan = client.post("/api/plans", json={"budget": 50000}).json()
+    s = plan["summary"]
+    assert s["diff"] is None and s["robustness"]["status"] == "queued"
+    fr = s["frontier"]
+    assert [r["budget"] for r in fr] == sorted(r["budget"] for r in fr) and any(r["is_current"] for r in fr)
+    assert all(a["planning_objective"] >= b["planning_objective"] - 1e-6 for a, b in zip(fr, fr[1:]))
+    assert fr[0]["cash_used"] == 0 and all(r["cash_used"] <= r["budget"] + 1e-6 for r in fr)
+    assert s["service"]["hero_skus"] and "plan_hero_fill_rate" in s["service"]
+    assert s["scorecard"]["savings_vs_tuned"] == pytest.approx(
+        s["scorecard"]["tuned_baseline"]["total_loss"] - s["scorecard"]["plan"]["total_loss"], abs=0.02)
+
+    full = client.get(f"/api/plans/{plan['id']}").json()["summary"]["robustness"]
+    assert full["status"] == "done", full
+    mc = full["monte_carlo"]
+    assert mc["n_worlds"] == 8 and {"plan", "static_baseline", "tuned_baseline"} <= set(mc["policies"])
+    assert 0 <= mc["savings"]["plan_vs_static_baseline"]["win_rate"] <= 1
+    roll = full["rolling"]
+    assert set(roll["actual_world"]) == {"plan_once", "replan_weekly", "baseline_weekly"}
+    assert roll["actual_world"]["plan_once"]["total_loss"] == pytest.approx(s["scorecard"]["plan"]["total_loss"], abs=1)
+    assert full["signal_ablation"]["status"] == "no confirmed signals"
+
+    target = next(a for a in plan["actions"] if a["order_qty"])
+    other = next(a for a in plan["actions"] if a["sku_id"] != target["sku_id"])
+    too_much = client.post(f"/api/plans/{plan['id']}/overrides",
+                           json={"items": [{"sku_id": target["sku_id"], "order_qty": 1_000_000}]})
+    assert too_much.status_code == 400 and "budget" in too_much.json()["detail"]
+    bad = client.post(f"/api/plans/{plan['id']}/overrides", json={"items": [{"sku_id": "SKU-001", "discount_pct": 0.8}]})
+    assert bad.status_code == 400
+    edited = client.post(f"/api/plans/{plan['id']}/overrides",
+                         json={"items": [{"sku_id": target["sku_id"], "order_qty": 1}, {"sku_id": other["sku_id"],
+                                                                                         "skip": True}]}).json()
+    row = next(a for a in edited["actions"] if a["sku_id"] == target["sku_id"])
+    assert row["overridden"] and row["order_qty"] >= 1 and row["order_qty"] % 1 == 0 and row["original"]
+    assert other["sku_id"] not in {a["sku_id"] for a in edited["actions"]}
+    assert other["sku_id"] in {x["sku_id"] for x in edited["summary"]["overridden_removed"]}
+    assert edited["summary"]["revision"] == 1 and edited["summary"]["overrides"]
+    assert edited["summary"]["cash_used"] <= 50000
+
+    nxt = client.post("/api/plans", json={"budget": 30000}).json()
+    d = nxt["summary"]["diff"]
+    assert d["previous_plan_id"] == plan["id"] and d["previous_budget"] == 50000
+    assert d["n_added"] + d["n_removed"] + d["n_changed"] == len(d["changes"])
+    client.post(f"/api/plans/{plan['id']}/approve")
+    assert client.post(f"/api/plans/{plan['id']}/overrides",
+                       json={"items": [{"sku_id": "SKU-001", "skip": True}]}).status_code == 409
+
+
+def test_sku_priority_override_changes_goodwill(client):
+    before = client.get("/api/skus/SKU-030").json()["priority"]
+    assert before["priority"] in ("hero", "standard") and not before["overridden"]
+    r = client.put("/api/skus/SKU-030/priority", json={"priority": "hero"}).json()
+    assert r["priority"] == "hero" and r["overridden"]
+    after = client.get("/api/skus/SKU-030").json()["priority"]
+    assert after["goodwill_per_unit"] >= before["goodwill_per_unit"]
+    assert next(s for s in client.get("/api/skus").json() if s["sku_id"] == "SKU-030")["priority"] == "hero"
+    assert client.put("/api/skus/SKU-030/priority", json={"priority": "auto"}).json()["overridden"] is False
+    assert client.put("/api/skus/SKU-030/priority", json={"priority": "vip"}).status_code == 422
+    assert client.put("/api/skus/NOPE/priority", json={"priority": "hero"}).status_code == 404
 
 
 def test_csv_import_is_all_or_nothing(client):

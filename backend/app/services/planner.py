@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Sequence
 
@@ -14,7 +14,7 @@ from .supply import ReorderMath, reorder_math, round_order_qty
 from .world import Action, Outcome, SkuContext, SkuWorld, World, defer, evaluate
 
 COVER_DAYS = 14
-PARTIAL_FRACTIONS = (0.25, 0.5, 0.75)
+PARTIAL_FRACTIONS = (0.15, 0.3, 0.45, 0.6, 0.75, 0.9)
 MARKDOWN_DISCOUNTS = (0.2, 0.35, 0.5)
 MARKDOWN_LATE_START_DAYS = 7
 MIN_BENEFIT_INR = 1.0
@@ -72,24 +72,29 @@ def position(ctx: SkuContext, sw: SkuWorld, horizon: int) -> float:
     return ctx.on_hand + inbound
 
 
-def candidate_actions(ctx: SkuContext, sw: SkuWorld, rm: ReorderMath, defer_out: Outcome, budget: float) -> list[Action]:
+def candidate_actions(ctx: SkuContext, sw: SkuWorld, rm: ReorderMath, defer_out: Outcome,
+                      budget: float | Sequence[float]) -> list[Action]:
+    """Menu of actions for one SKU. `budget` may be several budgets (for the budget frontier); the quantity
+    ladder is the union over them so every budget level has affordable partial buys."""
     horizon = len(sw.demand_paths[0][1])
+    budgets = [float(budget)] if isinstance(budget, (int, float)) else [float(b) for b in budget]
     shortfalls = []
     for _, path in sw.demand_paths:
-        tmp = SkuWorld([(1.0, path)], sw.standard_arrival_day, sw.expedite_arrival_day, sw.open_inbound)
-        shortfalls.append(evaluate(ctx, defer(ctx), tmp).units_short)
+        shortfalls.append(evaluate(ctx, defer(ctx), replace(sw, demand_paths=[(1.0, path)])).units_short)
     need = rm.reorder_point + rm.mean_daily_demand * COVER_DAYS - rm.position
-    raw = [need, 1.5 * need] + [s + rm.safety_stock for s in shortfalls if s > 0]
-    top = max(raw, default=0.0)
-    max_qty = budget / max(ctx.econ.unit_cost, 1e-9)
-    raw += [f * min(top, max_qty) for f in PARTIAL_FRACTIONS]
+    base_raw = [need, 1.5 * need] + [s + rm.safety_stock for s in shortfalls if s > 0]
+    top = max(base_raw, default=0.0)
     pack = max(1, int(ctx.case_pack))
-    # Quantities above what the budget could ever buy are clamped (not dropped): when demand jumps, the
-    # affordable maximum must stay on the menu or the SKU would silently fall back to "defer".
-    cap = int(math.floor(max_qty / pack + 1e-9)) * pack
-    cap = cap if cap >= ctx.moq else 0
-    qtys = sorted({q if q <= max_qty else cap
-                   for q in (round_order_qty(x, ctx.moq, ctx.case_pack) for x in raw)} - {0})
+    qset: set[int] = set()
+    for b in budgets:
+        max_qty = b / max(ctx.econ.unit_cost, 1e-9)
+        raw = base_raw + [f * min(top, max_qty) for f in PARTIAL_FRACTIONS]
+        # Quantities above what the budget could ever buy are clamped (not dropped): when demand jumps, the
+        # affordable maximum must stay on the menu or the SKU would silently fall back to "defer".
+        cap = int(math.floor(max_qty / pack + 1e-9)) * pack
+        cap = cap if cap >= ctx.moq else 0
+        qset |= {q if q <= max_qty else cap for q in (round_order_qty(x, ctx.moq, ctx.case_pack) for x in raw)}
+    qtys = sorted(qset - {0})
 
     po_opts: list[tuple[int, bool]] = []
     for q in qtys:
@@ -153,36 +158,87 @@ class PlanResult:
     def actions(self) -> list[Action]:
         return [d.action for d in self.decisions]
 
+    @property
+    def service_penalty_plan(self) -> float:
+        return sum(d.outcome.service_penalty for d in self.decisions)
 
-def build_plan(ctxs: Sequence[SkuContext], world: World, budget: float, z: float) -> PlanResult:
-    groups, cands, outs, meta = [], [], [], []
+
+@dataclass
+class SkuMenu:
+    ctx: SkuContext
+    sw: SkuWorld
+    reorder: ReorderMath
+    actions: list[Action]  # actions[0] is always defer
+    outcomes: list[Outcome]
+
+    @property
+    def defer_outcome(self) -> Outcome:
+        return self.outcomes[0]
+
+
+@dataclass
+class Menu:
+    skus: list[SkuMenu]
+
+
+def _reorder(ctx: SkuContext, sw: SkuWorld, z: float) -> ReorderMath:
+    horizon = len(sw.demand_paths[0][1])
+    p50 = next((p for w, p in sw.demand_paths if w >= 0.5), sw.demand_paths[0][1])
+    lt = sw.standard_arrival_day if sw.standard_arrival_day is not None else ctx.metrics.effective_lead_time_days
+    return reorder_math(list(p50), list(ctx.history), ctx.metrics, z, ctx.moq, ctx.case_pack,
+                        position(ctx, sw, horizon), lead_time_override=lt)
+
+
+def prepare_menu(ctxs: Sequence[SkuContext], world: World, budgets: float | Sequence[float], z: float) -> Menu:
+    """Generate and score every candidate action once; the menu can then be solved at any budget up to
+    max(budgets) (budget frontier) without re-simulating."""
+    out = []
     for ctx in ctxs:
         sw = world.skus[ctx.sku_id]
-        horizon = len(sw.demand_paths[0][1])
-        p50 = next((p for w, p in sw.demand_paths if w >= 0.5), sw.demand_paths[0][1])
-        lt = sw.standard_arrival_day if sw.standard_arrival_day is not None else ctx.metrics.effective_lead_time_days
-        rm = reorder_math(list(p50), list(ctx.history), ctx.metrics, z, ctx.moq, ctx.case_pack,
-                          position(ctx, sw, horizon), lead_time_override=lt)
+        rm = _reorder(ctx, sw, z)
         d_out = evaluate(ctx, defer(ctx), sw)
-        acts = candidate_actions(ctx, sw, rm, d_out, budget)
+        acts = candidate_actions(ctx, sw, rm, d_out, budgets)
         o = [d_out] + [evaluate(ctx, a, sw) for a in acts[1:]]
-        keep = [0] + [i for i in range(1, len(acts)) if o[i].total_loss < d_out.total_loss - MIN_BENEFIT_INR]
-        acts = [acts[i] for i in keep]
-        o = [o[i] for i in keep]
-        groups.append([(a.cash_outlay, oo.total_loss) for a, oo in zip(acts, o)])
-        cands.append(acts)
-        outs.append(o)
-        meta.append((rm, d_out, sw))
-    picks, _ = solve_mckp(groups, budget)
+        keep = [0] + [i for i in range(1, len(acts)) if o[i].objective < d_out.objective - MIN_BENEFIT_INR]
+        out.append(SkuMenu(ctx, sw, rm, [acts[i] for i in keep], [o[i] for i in keep]))
+    return Menu(out)
+
+
+def score_actions(ctxs: Sequence[SkuContext], world: World, actions: Sequence[Action], z: float,
+                  budget: float) -> PlanResult:
+    """Score a given set of actions (e.g. operator overrides) exactly like an optimised plan."""
+    by = {a.sku_id: a for a in actions}
     decisions = []
-    for ctx, i, acts, o, (rm, d_out, sw) in zip(ctxs, picks, cands, outs, meta):
-        decisions.append(SkuDecision(ctx, acts[i], o[i], d_out, rm, len(acts), list(sw.notes), list(sw.event_ids)))
+    for ctx in ctxs:
+        sw = world.skus[ctx.sku_id]
+        d_out = evaluate(ctx, defer(ctx), sw)
+        a = by.get(ctx.sku_id) or defer(ctx)
+        o = d_out if a.kind == "defer" else evaluate(ctx, a, sw)
+        decisions.append(SkuDecision(ctx, a, o, d_out, _reorder(ctx, sw, z), 1, list(sw.notes), list(sw.event_ids)))
+    return PlanResult(decisions, budget, sum(d.outcome.total_loss for d in decisions),
+                      sum(d.defer_outcome.total_loss for d in decisions))
+
+
+def solve_menu(menu: Menu, budget: float) -> PlanResult:
+    """Exact optimum of the menu under `budget`. Objective = financial loss + service penalty (priority SKUs)."""
+    groups = [[(a.cash_outlay, o.objective) for a, o in zip(m.actions, m.outcomes)] for m in menu.skus]
+    picks, _ = solve_mckp(groups, budget)
+    decisions = [SkuDecision(m.ctx, m.actions[i], m.outcomes[i], m.defer_outcome, m.reorder, len(m.actions),
+                             list(m.sw.notes), list(m.sw.event_ids)) for m, i in zip(menu.skus, picks)]
     return PlanResult(
         decisions=decisions,
         budget=budget,
         expected_loss_plan=sum(d.outcome.total_loss for d in decisions),
         expected_loss_no_action=sum(d.defer_outcome.total_loss for d in decisions),
     )
+
+
+def build_plan(ctxs: Sequence[SkuContext], world: World, budget: float, z: float) -> PlanResult:
+    return solve_menu(prepare_menu(ctxs, world, budget, z), budget)
+
+
+def frontier(menu: Menu, budgets: Sequence[float]) -> list[PlanResult]:
+    return [solve_menu(menu, b) for b in budgets]
 
 
 def action_reasons(dec: SkuDecision, as_of: date) -> list[str]:
@@ -196,27 +252,32 @@ def action_reasons(dec: SkuDecision, as_of: date) -> list[str]:
             r.append(f"Lot {lot_id}: {q:.0f} units expected to expire unsold")
     if dec.action.expedite:
         r.append("Standard lead time arrives too late; expedited freight pays for itself")
+    if dec.ctx.priority == "hero" and dec.action.order_qty:
+        r.append(f"Priority SKU: stockouts also carry a service penalty of INR {dec.ctx.goodwill_per_unit:.0f}/unit "
+                 f"(lost repeat business)")
     r.extend(dec.world_notes)
     return r
 
 
-# ---------------------------------------------------------------- baseline
+# ---------------------------------------------------------------- baselines
 
 BASELINE_SAFETY_DAYS = 7
 BASELINE_COVER_DAYS = 30
+TUNING_GRID = tuple((s, c) for s in (0, 3, 7, 10, 14) for c in (7, 14, 21, 30, 45))
 
 
-def baseline_actions(ctxs: Sequence[SkuContext], budget: float) -> list[Action]:
+def baseline_actions(ctxs: Sequence[SkuContext], budget: float, safety_days: float = BASELINE_SAFETY_DAYS,
+                     cover_days: float = BASELINE_COVER_DAYS) -> list[Action]:
     """Static reorder point on *stated* lead time and trailing 28-day average demand; ignores signals,
     never marks down. SKUs with the lowest days of cover order first until the budget is exhausted."""
     rows = []
     for ctx in ctxs:
         avg = float(np.mean(ctx.history[-28:])) if len(ctx.history) else 0.0
         pos = ctx.on_hand + sum(p.qty for p in ctx.open_pos)
-        rop = avg * (ctx.stated_lead_time + BASELINE_SAFETY_DAYS)
+        rop = avg * (ctx.stated_lead_time + safety_days)
         if avg <= 0 or pos > rop:
             continue
-        qty = round_order_qty(rop + avg * BASELINE_COVER_DAYS - pos, ctx.moq, ctx.case_pack)
+        qty = round_order_qty(rop + avg * cover_days - pos, ctx.moq, ctx.case_pack)
         rows.append((pos / avg, ctx, qty))
     rows.sort(key=lambda r: (r[0], r[1].sku_id))
     remaining = budget
@@ -232,3 +293,19 @@ def baseline_actions(ctxs: Sequence[SkuContext], budget: float) -> list[Action]:
         chosen[ctx.sku_id] = Action(ctx.sku_id, "standard_po", ctx.econ.unit_cost, ctx.expedite_premium_pct,
                                     order_qty=qty)
     return [chosen.get(c.sku_id, defer(c)) for c in ctxs]
+
+
+def tuned_baseline(ctxs: Sequence[SkuContext], world: World, budget: float) -> tuple[list[Action], dict]:
+    """The same reorder-point rule with its two knobs (safety days, cover days) grid-searched to minimise
+    expected loss in the *planning* world, i.e. the best rule an operator could pick with today's
+    information. It is a stronger, fairer comparison than the textbook defaults."""
+    best: tuple[float, float, float, list[Action]] | None = None
+    for s, c in TUNING_GRID:
+        acts = baseline_actions(ctxs, budget, s, c)
+        loss = sum(evaluate(ctx, a, world.skus[ctx.sku_id]).total_loss for ctx, a in zip(ctxs, acts))
+        if best is None or loss < best[0] - 1e-6:
+            best = (loss, s, c, acts)
+    assert best is not None
+    return best[3], {"safety_days": best[1], "cover_days": best[2], "planning_world_loss": round(best[0], 2),
+                     "grid": f"safety days {sorted({s for s, _ in TUNING_GRID})} x cover days "
+                             f"{sorted({c for _, c in TUNING_GRID})}"}

@@ -1,0 +1,44 @@
+# CI build + deploy (e.g. a Cloud Build trigger on pushes to main). First-time infrastructure is created by
+# infra/gcp/deploy.sh; this file only builds a new image and rolls it out, keeping the service's existing
+# configuration (env vars, secrets, Cloud SQL connection, service account).
+# The Cloud Build service account needs roles/run.developer and roles/iam.serviceAccountUser on the runtime SA.
+#
+#   gcloud builds submit --config cloudbuild.yaml --substitutions _REGION=asia-south1
+
+substitutions:
+  _REGION: asia-south1
+  _REPO: inventory-rescue
+  _SERVICE: inventory-rescue
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/app
+
+options:
+  dynamicSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}:${BUILD_ID}", "-t", "${_IMAGE}:latest", "."]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_IMAGE}"]
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args: ["run", "deploy", "${_SERVICE}", "--image", "${_IMAGE}:${BUILD_ID}", "--region", "${_REGION}", "--quiet"]
+
+  - id: update-seed-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if gcloud run jobs describe ${_SERVICE}-seed --region ${_REGION} >/dev/null 2>&1; then
+          gcloud run jobs update ${_SERVICE}-seed --image ${_IMAGE}:${BUILD_ID} --region ${_REGION} --quiet
+        fi
+
+images:
+  - ${_IMAGE}:${BUILD_ID}
+  - ${_IMAGE}:latest

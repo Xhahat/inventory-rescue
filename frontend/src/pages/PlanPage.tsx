@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
+import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api, inr, num, pct } from '../api';
-import type { Overview, Plan, PlanAction } from '../api';
-import { AlertList, Badge, Card, ErrorBox, Kpi, MethodBadge, RecordChip, Spinner } from '../ui';
+import type { Dist, OverrideItem, Overview, Plan, PlanAction, PlanDiff, Robustness } from '../api';
+import { AlertList, Badge, Card, ErrorBox, Kpi, MethodBadge, PriorityBadge, RecordChip, Spinner } from '../ui';
 
 const KIND: Record<string, [string, string]> = {
   standard_po: ['ok', 'buy'],
   expedited_po: ['bad', 'expedite'],
   markdown: ['warn', 'markdown'],
   defer: ['neutral', 'defer'],
+};
+
+const POLICY_LABEL: Record<string, string> = {
+  plan: 'Inventory Rescue plan',
+  static_baseline: 'Static reorder rule',
+  tuned_baseline: 'Tuned reorder rule',
+  plan_without_signals: 'Plan without confirmed signals',
+  plan_once: 'Plan once (day 0 only)',
+  replan_weekly: 'Re-plan weekly',
+  baseline_weekly: 'Reorder rule, weekly',
 };
 
 function KindBadges({ kind }: { kind: string }) {
@@ -25,22 +36,81 @@ function KindBadges({ kind }: { kind: string }) {
   );
 }
 
-function ActionRow({ a }: { a: PlanAction }) {
+type Edit = { qty?: string; pct?: string; skip?: boolean };
+
+function ActionRow({
+  a,
+  hero,
+  editing,
+  edit,
+  onEdit,
+}: {
+  a: PlanAction;
+  hero: boolean;
+  editing: boolean;
+  edit: Edit | undefined;
+  onEdit: (e: Edit) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const cls = [editing ? '' : 'clickable', a.overridden ? 'overridden' : '', edit?.skip ? 'skipped' : '']
+    .filter(Boolean)
+    .join(' ');
   return (
     <>
-      <tr className="clickable" onClick={() => setOpen(!open)}>
+      <tr className={cls} onClick={() => !editing && setOpen(!open)}>
         <td>{a.rank}</td>
         <td>
           <a href={`#/sku/${a.sku_id}`} onClick={(e) => e.stopPropagation()}>
             {a.sku_id}
-          </a>
+          </a>{' '}
+          {hero && <PriorityBadge priority="hero" />}
           <div className="muted small">{a.sku_name}</div>
         </td>
         <td>
           <KindBadges kind={a.kind} />
+          {a.overridden && (
+            <Badge kind="warn" title={`Optimiser suggested: ${a.original}`}>
+              edited
+            </Badge>
+          )}
         </td>
-        <td>{a.label}</td>
+        <td>
+          {editing ? (
+            <span className="row-gap">
+              <label className="small">
+                qty{' '}
+                <input
+                  className="w-qty"
+                  type="number"
+                  min={0}
+                  value={edit?.qty ?? String(a.order_qty)}
+                  onChange={(e) => onEdit({ ...edit, qty: e.target.value })}
+                />
+              </label>{' '}
+              <label className="small">
+                % off{' '}
+                <input
+                  className="w-pct"
+                  type="number"
+                  min={0}
+                  max={60}
+                  step={5}
+                  value={edit?.pct ?? String(Math.round((a.discount_pct ?? 0) * 100))}
+                  onChange={(e) => onEdit({ ...edit, pct: e.target.value })}
+                />
+              </label>{' '}
+              <label className="small">
+                <input type="checkbox" checked={!!edit?.skip} onChange={(e) => onEdit({ ...edit, skip: e.target.checked })} />{' '}
+                skip
+              </label>
+            </span>
+          ) : (
+            <>
+              {a.label}
+              {a.overridden && <div className="muted small">was: {a.original}</div>}
+            </>
+          )}
+        </td>
         <td className="num">{inr(a.cash_outlay)}</td>
         <td className="num">{inr(a.expected_loss_if_deferred)}</td>
         <td className="num">{inr(a.expected_loss_with_action)}</td>
@@ -48,9 +118,9 @@ function ActionRow({ a }: { a: PlanAction }) {
         <td>
           <MethodBadge method={a.forecast_method} />
         </td>
-        <td className="muted">{open ? '▾' : '▸'}</td>
+        <td className="muted">{editing ? '' : open ? '▾' : '▸'}</td>
       </tr>
-      {open && (
+      {open && !editing && (
         <tr className="detail-row">
           <td />
           <td colSpan={9}>
@@ -72,13 +142,238 @@ function ActionRow({ a }: { a: PlanAction }) {
   );
 }
 
+function DiffCard({ d }: { d: PlanDiff }) {
+  return (
+    <Card title={`What changed since plan #${d.previous_plan_id}`}>
+      <p className="small">
+        Previous plan: as of {d.previous_as_of}, budget {inr(d.previous_budget)} ·{' '}
+        <span className="change-added">{d.n_added} added</span> ·{' '}
+        <span className="change-removed">{d.n_removed} removed</span> ·{' '}
+        <span className="change-changed">{d.n_changed} changed</span> · {d.unchanged} unchanged · expected loss{' '}
+        {d.delta_expected_loss <= 0 ? '−' : '+'}
+        {inr(Math.abs(d.delta_expected_loss))} · cash {d.delta_cash <= 0 ? '−' : '+'}
+        {inr(Math.abs(d.delta_cash))}
+      </p>
+      {d.changes.length === 0 ? (
+        <p className="muted">Same actions as before.</p>
+      ) : (
+        <table className="table compact">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Change</th>
+              <th>Before</th>
+              <th>Now</th>
+              <th className="num">Cash Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.changes.map((c) => (
+              <tr key={c.sku_id}>
+                <td>
+                  <a href={`#/sku/${c.sku_id}`}>{c.sku_id}</a> <span className="muted small">{c.sku_name}</span>
+                </td>
+                <td className={`change-${c.change}`}>{c.change}</td>
+                <td>{c.before}</td>
+                <td>{c.after}</td>
+                <td className="num">{inr(c.cash_delta)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  );
+}
+
+function Frontier({ plan, onPick }: { plan: Plan; onPick: (b: number) => void }) {
+  const rows = plan.summary.frontier ?? [];
+  if (!rows.length) return null;
+  const data = rows.map((r) => ({ ...r, label: `₹${Math.round(r.budget / 1000)}k` }));
+  const cur = rows.find((r) => r.is_current);
+  return (
+    <Card title="Budget frontier: what each extra rupee buys">
+      <ResponsiveContainer width="100%" height={240}>
+        <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="label" />
+          <YAxis tickFormatter={(v: number) => `₹${Math.round(v / 1000)}k`} width={60} />
+          <Tooltip formatter={(v) => inr(Number(v))} />
+          <Legend />
+          <Line type="monotone" dataKey="eval_loss" name="Simulated loss (evaluation world)" stroke="#2563eb" strokeWidth={2} isAnimationActive={false} />
+          <Line type="monotone" dataKey="planning_loss" name="Expected loss (planning forecast)" stroke="#9ca3af" strokeDasharray="4 4" isAnimationActive={false} />
+          {cur && <ReferenceLine x={`₹${Math.round(cur.budget / 1000)}k`} stroke="#5b21b6" label="current" />}
+        </LineChart>
+      </ResponsiveContainer>
+      <table className="table compact">
+        <thead>
+          <tr>
+            <th className="num">Budget</th>
+            <th className="num">Cash used</th>
+            <th className="num">Expected loss</th>
+            <th className="num">Simulated loss</th>
+            <th className="num">Fill rate</th>
+            <th className="num">Hero fill</th>
+            <th className="num">Actions</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.budget} className={r.is_current ? 'overridden' : ''}>
+              <td className="num">{inr(r.budget)}</td>
+              <td className="num">{inr(r.cash_used)}</td>
+              <td className="num">{inr(r.planning_loss)}</td>
+              <td className="num strong">{inr(r.eval_loss)}</td>
+              <td className="num">{pct(r.eval_fill_rate, 1)}</td>
+              <td className="num">{pct(r.eval_hero_fill_rate, 1)}</td>
+              <td className="num">{r.n_actions}</td>
+              <td>
+                {!r.is_current && r.budget > 0 && (
+                  <button className="link" onClick={() => onPick(r.budget)}>
+                    use
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted small">
+        One optimisation, solved at every budget. The gap between the curves is forecast error: the planning forecast
+        vs the simulated actual demand.
+      </p>
+    </Card>
+  );
+}
+
+function DistCell({ d, money = true }: { d: Dist; money?: boolean }) {
+  const f = (v: number) => (money ? inr(v) : pct(v, 1));
+  return (
+    <td className="num dist">
+      {f(d.mean)}
+      <div className="range">
+        {f(d.p5)} – {f(d.p95)}
+      </div>
+    </td>
+  );
+}
+
+function RobustnessCard({ r, onRetry }: { r: Robustness | undefined; onRetry: () => void }) {
+  if (!r) return null;
+  if (r.status !== 'done')
+    return (
+      <Card title="Robustness check">
+        {r.status === 'failed' ? (
+          <p className="error-inline">
+            Evaluation failed: {r.error}{' '}
+            <button className="link" onClick={onRetry}>
+              retry
+            </button>
+          </p>
+        ) : (
+          <Spinner label="Replaying the plan in Monte Carlo worlds and weekly re-plans…" />
+        )}
+      </Card>
+    );
+  const mc = r.monte_carlo!;
+  const roll = r.rolling!;
+  const ab = r.signal_ablation!;
+  return (
+    <div className="grid2">
+      <Card title={`Monte Carlo: ${mc.n_worlds} simulated futures`}>
+        <table className="table compact">
+          <thead>
+            <tr>
+              <th>Policy</th>
+              <th className="num">Loss (mean, p5–p95)</th>
+              <th className="num">Fill rate</th>
+              <th className="num">Hero fill</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(mc.policies).map(([k, v]) => (
+              <tr key={k}>
+                <td>{POLICY_LABEL[k] ?? k}</td>
+                <DistCell d={v.total_loss} />
+                <DistCell d={v.fill_rate} money={false} />
+                <DistCell d={v.hero_fill_rate} money={false} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <ul className="bullets small">
+          {Object.entries(mc.savings).map(([k, v]) => (
+            <li key={k}>
+              vs {POLICY_LABEL[k.replace('plan_vs_', '')] ?? k}: saves <strong>{inr(v.mean)}</strong> on average (
+              {inr(v.p5)} to {inr(v.p95)}), better in <strong>{pct(v.win_rate)}</strong> of futures
+            </li>
+          ))}
+        </ul>
+        <p className="muted small">{r.notes}</p>
+      </Card>
+      <Card title="Rolling re-plan (weekly reviews)">
+        <table className="table compact">
+          <thead>
+            <tr>
+              <th>Policy</th>
+              <th className="num">Loss (actual world)</th>
+              <th className="num">Loss ({roll.n_mc_worlds} futures)</th>
+              <th className="num">Fill</th>
+              <th className="num">Orders</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(roll.actual_world).map(([k, v]) => (
+              <tr key={k}>
+                <td>{POLICY_LABEL[k] ?? k}</td>
+                <td className="num strong">{inr(v.total_loss)}</td>
+                {roll.mc[k] ? <DistCell d={roll.mc[k].total_loss} /> : <td />}
+                <td className="num">{pct(v.fill_rate, 1)}</td>
+                <td className="num">{v.orders_placed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <ul className="bullets small">
+          {Object.entries(roll.comparisons).map(([k, v]) => (
+            <li key={k}>
+              {POLICY_LABEL['replan_weekly']} vs {POLICY_LABEL[k.replace('replan_weekly_vs_', '')]}: {inr(v.mean)} lower
+              loss on average, better in {pct(v.win_rate)} of futures
+            </li>
+          ))}
+        </ul>
+        <p className="muted small">{roll.notes}</p>
+        <h3 className="small">Value of confirmed signals</h3>
+        {ab.status === 'done' && ab.actual_world ? (
+          <p className="small">
+            With signals {inr(ab.actual_world.with_signals)} vs without {inr(ab.actual_world.without_signals)}:{' '}
+            <strong>{inr(ab.actual_world.value_of_signals)}</strong> saved ({ab.n_changed_skus} SKUs decided
+            differently)
+            {ab.monte_carlo && (
+              <>
+                ; across futures {inr(ab.monte_carlo.mean)} on average, better in {pct(ab.monte_carlo.win_rate)}
+              </>
+            )}
+            .
+          </p>
+        ) : (
+          <p className="muted small">{ab.note ?? ab.status}</p>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 export default function PlanPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [budget, setBudget] = useState<string>('');
-  const [busy, setBusy] = useState<'' | 'plan' | 'approve'>('');
+  const [busy, setBusy] = useState<'' | 'plan' | 'approve' | 'override'>('');
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [edits, setEdits] = useState<Record<string, Edit>>({});
 
   const load = useCallback(async () => {
     try {
@@ -97,14 +392,32 @@ export default function PlanPage() {
     load();
   }, [load]);
 
-  const generate = async () => {
-    const b = Number(budget);
+  const rstatus = plan?.summary.robustness?.status;
+  const planId = plan?.id;
+  useEffect(() => {
+    if (rstatus !== 'queued' || planId === undefined) return;
+    const t = setTimeout(async () => {
+      try {
+        const p = await api.plan(planId);
+        setPlan((cur) => (cur && cur.id === p.id ? p : cur));
+      } catch {
+        /* next poll */
+      }
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [rstatus, planId, plan]);
+
+  const generate = async (b0?: number) => {
+    const b = b0 ?? Number(budget);
     if (!Number.isFinite(b) || b <= 0) {
       setError('Budget must be a positive number.');
       return;
     }
+    if (b0 !== undefined) setBudget(String(b0));
     setBusy('plan');
     setError(null);
+    setEditing(false);
+    setEdits({});
     try {
       setPlan(await api.createPlan(b));
       setOverview(await api.overview());
@@ -128,12 +441,53 @@ export default function PlanPage() {
     }
   };
 
+  const applyEdits = async () => {
+    if (!plan) return;
+    const items: OverrideItem[] = [];
+    for (const a of plan.actions) {
+      const e = edits[a.sku_id];
+      if (!e) continue;
+      if (e.skip) {
+        items.push({ sku_id: a.sku_id, skip: true });
+        continue;
+      }
+      const it: OverrideItem = { sku_id: a.sku_id };
+      if (e.qty !== undefined && Number(e.qty) !== a.order_qty) it.order_qty = Number(e.qty);
+      const oldPct = Math.round((a.discount_pct ?? 0) * 100);
+      if (e.pct !== undefined && Number(e.pct) !== oldPct) it.discount_pct = Number(e.pct) / 100;
+      if (it.order_qty !== undefined || it.discount_pct !== undefined) items.push(it);
+    }
+    if (!items.length) {
+      setEditing(false);
+      return;
+    }
+    setBusy('override');
+    setError(null);
+    try {
+      setPlan(await api.overridePlan(plan.id, items));
+      setEditing(false);
+      setEdits({});
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const retryEval = async () => {
+    if (!plan) return;
+    await fetch(`/api/plans/${plan.id}/evaluate`, { method: 'POST' });
+    setPlan(await api.plan(plan.id));
+  };
+
   if (!loaded) return <Spinner label="Loading…" />;
 
   const s = plan?.summary;
   const stale =
     plan && overview?.forecasts.latest && new Date(overview.forecasts.latest) > new Date(plan.created_at);
   const fm = s?.forecast_methods ?? {};
+  const heroes = new Set(s?.service?.hero_skus ?? []);
+  const card = s?.scorecard;
 
   return (
     <div className="page">
@@ -156,7 +510,7 @@ export default function PlanPage() {
               className="w-num"
             />
           </label>
-          <button className="primary" onClick={generate} disabled={!!busy}>
+          <button className="primary" onClick={() => generate()} disabled={!!busy}>
             {busy === 'plan' ? <Spinner label="Planning…" /> : plan ? 'Re-plan' : 'Generate plan'}
           </button>
         </div>
@@ -169,9 +523,9 @@ export default function PlanPage() {
           <a href="#/inbox">Signal Inbox</a>. Only confirmed signals affect forecasts.
         </div>
       )}
-      {overview && overview.active_jobs.length > 0 && (
+      {overview && overview.active_jobs.some((j) => j.kind !== 'evaluate_plan') && (
         <div className="notice">
-          <Spinner /> {overview.active_jobs.length} background job(s) running (forecast refresh). Re-plan when done.{' '}
+          <Spinner /> Background job(s) running (forecast refresh). Re-plan when done.{' '}
           <button className="link" onClick={load}>
             Refresh
           </button>
@@ -192,7 +546,7 @@ export default function PlanPage() {
         </Card>
       )}
 
-      {plan && s && (
+      {plan && s && card && (
         <>
           <div className="kpis">
             <Kpi
@@ -210,21 +564,30 @@ export default function PlanPage() {
               sub="no action → with plan (planning forecast)"
             />
             <Kpi
-              label="Savings vs rule baseline"
-              tone={s.scorecard.savings >= 0 ? 'good' : 'bad'}
-              value={inr(s.scorecard.savings)}
+              label="Savings vs reorder rules"
+              tone={card.savings_vs_tuned >= 0 ? 'good' : 'bad'}
+              value={inr(card.savings_vs_tuned)}
               sub={
                 <>
-                  simulated; baseline {inr(s.scorecard.baseline.total_loss)} vs plan {inr(s.scorecard.plan.total_loss)}{' '}
-                  · <a href="#/scenario">details</a>
+                  vs best-tuned rule ({s.tuned_baseline.safety_days}d safety, {s.tuned_baseline.cover_days}d cover);{' '}
+                  {inr(card.savings)} vs static rule · <a href="#/scenario">details</a>
                 </>
               }
             />
-            <Kpi label="SKUs at risk" value={num(s.skus_at_risk)} sub={`${s.n_actions} actions recommended`} />
+            <Kpi
+              label="Fill rate (simulated)"
+              value={pct(s.service.plan_fill_rate, 1)}
+              sub={
+                <>
+                  hero SKUs {pct(s.service.plan_hero_fill_rate, 1)} · rule {pct(s.service.baseline_fill_rate, 1)} / hero{' '}
+                  {pct(s.service.baseline_hero_fill_rate, 1)}
+                </>
+              }
+            />
             <Kpi
               label="Forecasts"
-              value={`${fm.llm ?? 0} LLM · ${fm.fallback ?? 0} fallback`}
-              sub={overview ? `${overview.forecasts.fresh}/${overview.forecasts.total} fresh` : undefined}
+              value={`${fm.hybrid ?? 0} hybrid · ${fm.statistical ?? 0} statistical`}
+              sub={overview ? `${overview.forecasts.fresh}/${overview.forecasts.total} fresh · ${s.skus_at_risk} SKUs at risk` : undefined}
             />
           </div>
 
@@ -235,6 +598,7 @@ export default function PlanPage() {
               </>
             }
           >
+            {plan.explanation.stale_note && <div className="notice warn small">{plan.explanation.stale_note}</div>}
             <p>{plan.explanation.summary}</p>
             <ul className="bullets">
               {plan.explanation.bullets.map((b, i) => (
@@ -247,12 +611,14 @@ export default function PlanPage() {
               ))}
             </ul>
             {plan.explanation.error && (
-              <p className="muted small">LLM explanation rejected: {plan.explanation.error}</p>
+              <p className="muted small">Model explanation rejected: {plan.explanation.error}</p>
             )}
           </Card>
 
+          {s.diff && <DiffCard d={s.diff} />}
+
           <Card
-            title={`Ranked actions (plan #${plan.id})`}
+            title={`Ranked actions (plan #${plan.id}${s.revision ? `, edited ×${s.revision}` : ''})`}
             actions={
               plan.status === 'approved' ? (
                 <>
@@ -264,10 +630,31 @@ export default function PlanPage() {
                     Markdown CSV ({plan.exports?.markdown_lines ?? 0})
                   </a>
                 </>
+              ) : editing ? (
+                <>
+                  <button
+                    className="ghost"
+                    onClick={() => {
+                      setEditing(false);
+                      setEdits({});
+                    }}
+                    disabled={!!busy}
+                  >
+                    Cancel
+                  </button>
+                  <button className="primary" onClick={applyEdits} disabled={!!busy}>
+                    {busy === 'override' ? <Spinner label="Re-scoring…" /> : 'Apply overrides'}
+                  </button>
+                </>
               ) : (
-                <button className="primary" onClick={approve} disabled={!!busy || plan.actions.length === 0}>
-                  {busy === 'approve' ? <Spinner label="Approving…" /> : 'Approve & export CSVs'}
-                </button>
+                <>
+                  <button className="ghost" onClick={() => setEditing(true)} disabled={!!busy || !plan.actions.length}>
+                    Edit plan
+                  </button>
+                  <button className="primary" onClick={approve} disabled={!!busy || plan.actions.length === 0}>
+                    {busy === 'approve' ? <Spinner label="Approving…" /> : 'Approve & export CSVs'}
+                  </button>
+                </>
               )
             }
           >
@@ -291,58 +678,87 @@ export default function PlanPage() {
                 </thead>
                 <tbody>
                   {plan.actions.map((a) => (
-                    <ActionRow key={a.id} a={a} />
+                    <ActionRow
+                      key={a.id}
+                      a={a}
+                      hero={heroes.has(a.sku_id)}
+                      editing={editing}
+                      edit={edits[a.sku_id]}
+                      onEdit={(e) => setEdits((cur) => ({ ...cur, [a.sku_id]: e }))}
+                    />
                   ))}
                 </tbody>
               </table>
             )}
+            {(s.overridden_removed ?? []).length > 0 && (
+              <p className="small">
+                Skipped by operator:{' '}
+                {s.overridden_removed!.map((x) => (
+                  <span key={x.sku_id} className="chip" title={`Optimiser suggested: ${x.original}`}>
+                    {x.sku_id}
+                  </span>
+                ))}
+              </p>
+            )}
             <p className="muted small">
-              Click a row for reasons and the records behind it. Loss = lost margin + expiry write-off + markdown cost
-              + expedite premium, averaged over low/base/high demand paths.
+              {editing
+                ? 'Quantities are rounded to MOQ / case pack; discounts 5–60% apply to the soonest-expiring lot. The edited plan is re-scored with the same simulator and must fit the budget.'
+                : 'Click a row for reasons and the records behind it. Loss = lost margin + expiry write-off + markdown cost + cannibalised margin + expedite premium, averaged over demand paths and supplier-delay cases.'}
             </p>
           </Card>
+
+          <RobustnessCard r={s.robustness} onRetry={retryEval} />
+
+          <Frontier plan={plan} onPick={(b) => generate(b)} />
 
           <div className="grid2">
             <Card title="Active alerts">
               <AlertList alerts={overview?.alerts ?? []} />
             </Card>
-            <Card title="Rule-based baseline (for comparison)">
+            <Card title="Reorder-rule baselines (for comparison)">
               <p className="muted small">
-                Reorder-point rule: order up to cover when position falls below the reorder point; no markdowns, no
-                expedites, no signals, same budget.
+                Static rule: reorder point on stated lead time + 7 days safety, order up to 30 days of cover. Tuned
+                rule: the same rule with safety/cover chosen from {s.tuned_baseline.grid} to minimise expected loss
+                with today's information. Neither marks down, expedites or uses signals; same budget.
               </p>
-              {plan.baseline_actions.length === 0 ? (
-                <p className="muted">Baseline places no orders.</p>
-              ) : (
-                <table className="table compact">
-                  <thead>
-                    <tr>
-                      <th>SKU</th>
-                      <th>Action</th>
-                      <th className="num">Qty</th>
-                      <th className="num">Cash</th>
+              <table className="table compact">
+                <thead>
+                  <tr>
+                    <th />
+                    <th className="num">Loss</th>
+                    <th className="num">Fill</th>
+                    <th className="num">Hero fill</th>
+                    <th className="num">Expired units</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(
+                    [
+                      ['Plan', card.plan, s.service.plan_hero_fill_rate],
+                      ['Tuned rule', card.tuned_baseline, s.service.tuned_hero_fill_rate],
+                      ['Static rule', card.baseline, s.service.baseline_hero_fill_rate],
+                    ] as const
+                  ).map(([n, t, h]) => (
+                    <tr key={n}>
+                      <td>{n}</td>
+                      <td className="num strong">{inr(t.total_loss)}</td>
+                      <td className="num">{pct(t.fill_rate, 1)}</td>
+                      <td className="num">{pct(h, 1)}</td>
+                      <td className="num">{num(t.expired_units)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {plan.baseline_actions.map((b, i) => (
-                      <tr key={i}>
-                        <td>
-                          <a href={`#/sku/${b.sku_id}`}>{b.sku_id}</a>
-                        </td>
-                        <td>
-                          <KindBadges kind={b.kind} />
-                        </td>
-                        <td className="num">{num(b.order_qty)}</td>
-                        <td className="num">{inr(b.cash_outlay)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                  ))}
+                </tbody>
+              </table>
               <p className="small">
-                Simulated stockout SKU-days: plan {num(s.scorecard.plan.stockout_sku_days)} vs baseline{' '}
-                {num(s.scorecard.baseline.stockout_sku_days)} · expired units {num(s.scorecard.plan.expired_units)} vs{' '}
-                {num(s.scorecard.baseline.expired_units)} · budget use {pct(s.cash_used / s.budget)}
+                Static rule orders:{' '}
+                {plan.baseline_actions.length === 0
+                  ? 'none'
+                  : plan.baseline_actions.map((b) => `${b.sku_id} ×${b.order_qty}`).join(', ')}
+                <br />
+                Tuned rule orders:{' '}
+                {s.tuned_baseline.actions.length === 0
+                  ? 'none'
+                  : s.tuned_baseline.actions.map((b) => `${b.sku_id} ×${b.order_qty}`).join(', ')}
               </p>
             </Card>
           </div>

@@ -15,16 +15,19 @@ const LOSS_PARTS: [keyof Totals, string, string][] = [
   ['lost_margin', 'Lost margin (stockouts)', '#ef4444'],
   ['expiry_writeoff', 'Expiry write-off', '#f59e0b'],
   ['markdown_cost', 'Markdown cost', '#a855f7'],
+  ['cannibalisation', 'Cannibalised margin', '#ec4899'],
   ['expedite_premium', 'Expedite premium', '#3b82f6'],
 ];
 
-const ROWS: [keyof Totals, string, 'inr' | 'num'][] = [
+const ROWS: [keyof Totals, string, 'inr' | 'num' | 'pct'][] = [
   ['total_loss', 'Total loss', 'inr'],
   ['lost_margin', 'Lost margin', 'inr'],
   ['expiry_writeoff', 'Expiry write-off', 'inr'],
   ['markdown_cost', 'Markdown cost', 'inr'],
+  ['cannibalisation', 'Cannibalised margin', 'inr'],
   ['expedite_premium', 'Expedite premium', 'inr'],
   ['cash_outlay', 'Cash outlay', 'inr'],
+  ['fill_rate', 'Fill rate', 'pct'],
   ['units_short', 'Units short', 'num'],
   ['stockout_sku_days', 'Stockout SKU-days', 'num'],
   ['expired_units', 'Expired units', 'num'],
@@ -52,7 +55,7 @@ function TotalsTable({ cols }: { cols: [string, Totals][] }) {
             <td>{label}</td>
             {cols.map(([h, t]) => (
               <td key={h} className="num">
-                {f === 'inr' ? inr(t[k]) : num(t[k])}
+                {f === 'inr' ? inr(t[k]) : f === 'pct' ? pct(t[k], 1) : num(t[k])}
               </td>
             ))}
           </tr>
@@ -242,20 +245,27 @@ export default function ScenarioPage() {
             title={
               <>
                 Value scorecard (plan #{plan.id}, budget {inr(plan.budget)}){' '}
-                <Badge kind={s.scorecard.savings >= 0 ? 'ok' : 'bad'}>savings {inr(s.scorecard.savings)}</Badge>
+                <Badge kind={s.scorecard.savings >= 0 ? 'ok' : 'bad'}>vs static {inr(s.scorecard.savings)}</Badge>
+                {s.scorecard.tuned_baseline && (
+                  <Badge kind={s.scorecard.savings_vs_tuned >= 0 ? 'ok' : 'bad'}>
+                    vs tuned {inr(s.scorecard.savings_vs_tuned)}
+                  </Badge>
+                )}
               </>
             }
           >
             <div className="grid2">
               <LossChart
                 cols={[
-                  ['Rule baseline', s.scorecard.baseline],
+                  ['Static rule', s.scorecard.baseline],
+                  ...(s.scorecard.tuned_baseline ? [['Tuned rule', s.scorecard.tuned_baseline] as [string, Totals]] : []),
                   ['Recommended plan', s.scorecard.plan],
                 ]}
               />
               <TotalsTable
                 cols={[
-                  ['Rule baseline', s.scorecard.baseline],
+                  ['Static rule', s.scorecard.baseline],
+                  ...(s.scorecard.tuned_baseline ? [['Tuned rule', s.scorecard.tuned_baseline] as [string, Totals]] : []),
                   ['Recommended plan', s.scorecard.plan],
                 ]}
               />
@@ -314,7 +324,7 @@ export default function ScenarioPage() {
       )}
 
       <Card
-        title="Forecast backtest (14-day hold-out)"
+        title="Forecast backtest (rolling origin, 14-day horizon)"
         actions={
           <button onClick={runBt} disabled={!!btRunning}>
             {btRunning ? <Spinner label={btJob?.status} /> : bt ? 'Re-run backtest' : 'Run backtest'}
@@ -322,34 +332,61 @@ export default function ScenarioPage() {
         }
       >
         {btJob?.status === 'failed' && <ErrorBox error={btJob.error} />}
-        {!bt && <p className="muted">Not run yet. It forecasts the last 14 days from earlier data for the top 10 SKUs.</p>}
-        {bt && (
+        {!bt && (
+          <p className="muted">
+            Not run yet. It forecasts 14 days from three past dates for the top 10 SKUs and scores against actual sales.
+          </p>
+        )}
+        {bt && !bt.pooled && <p className="muted">Backtest format changed; re-run it.</p>}
+        {bt && bt.pooled && (
           <>
             <p>
-              Hold-out from <strong>{bt.holdout_start}</strong> ({bt.holdout_days} days, {bt.skus} SKUs) · valid LLM
-              forecasts: <strong>{bt.llm_valid_forecasts}</strong>/{bt.skus}
+              Origins <strong>{bt.origins.join(', ')}</strong> · {bt.holdout_days} days · {bt.skus} SKUs · valid hybrid
+              forecasts (latest origin): <strong>{bt.hybrid_valid_forecasts}</strong>/{bt.skus}
             </p>
-            <div className="kpis">
-              <div className="kpi">
-                <div className="kpi-label">WAPE seasonal-naive (all)</div>
-                <div className="kpi-value">{pct(bt.wape_naive_all, 1)}</div>
-              </div>
-              <div className="kpi">
-                <div className="kpi-label">WAPE LLM (valid only)</div>
-                <div className="kpi-value">{pct(bt.wape_llm_on_valid, 1)}</div>
-              </div>
-              <div className="kpi">
-                <div className="kpi-label">WAPE naive (same SKUs)</div>
-                <div className="kpi-value">{pct(bt.wape_naive_on_valid, 1)}</div>
-              </div>
-            </div>
             <table className="table compact">
               <thead>
                 <tr>
-                  <th>SKU</th>
-                  <th>Method</th>
-                  <th className="num">WAPE LLM</th>
+                  <th>Model</th>
+                  <th className="num">WAPE</th>
+                  <th className="num">p10–p90 coverage</th>
+                  <th className="num">Points</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(
+                  [
+                    ['naive', 'Seasonal naive'],
+                    ['naive_events', 'Seasonal naive + calendar events'],
+                    ['statistical', 'Statistical (Holt-Winters / Croston + events)'],
+                    ['hybrid', 'Hybrid (model-tuned event multipliers)'],
+                  ] as const
+                )
+                  .filter(([k]) => bt.pooled[k])
+                  .map(([k, label]) => (
+                    <tr key={k}>
+                      <td>{label}</td>
+                      <td className="num strong">{pct(bt.pooled[k].wape, 1)}</td>
+                      <td className="num">{pct(bt.pooled[k].coverage_p10_p90, 0)}</td>
+                      <td className="num">{bt.pooled[k].n_points}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+            {bt.pooled.hybrid && (
+              <p className="small">
+                On the same SKUs and dates, statistical WAPE is {pct(bt.wape_statistical_on_hybrid_skus, 1)} vs hybrid{' '}
+                {pct(bt.pooled.hybrid.wape, 1)}.
+              </p>
+            )}
+            <table className="table compact">
+              <thead>
+                <tr>
+                  <th>SKU (latest origin)</th>
+                  <th>Hybrid</th>
                   <th className="num">WAPE naive</th>
+                  <th className="num">WAPE statistical</th>
+                  <th className="num">WAPE hybrid</th>
                 </tr>
               </thead>
               <tbody>
@@ -358,11 +395,10 @@ export default function ScenarioPage() {
                     <td>
                       <a href={`#/sku/${r.sku_id}`}>{r.sku_id}</a>
                     </td>
-                    <td>
-                      <MethodBadge method={r.llm_method} />
-                    </td>
-                    <td className="num">{pct(r.wape_llm, 1)}</td>
+                    <td>{r.hybrid_method ? <MethodBadge method={r.hybrid_method} /> : <span className="muted">off</span>}</td>
                     <td className="num">{pct(r.wape_naive, 1)}</td>
+                    <td className="num">{pct(r.wape_statistical, 1)}</td>
+                    <td className="num">{pct(r.wape_hybrid, 1)}</td>
                   </tr>
                 ))}
               </tbody>

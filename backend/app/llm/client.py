@@ -1,5 +1,6 @@
-"""LLM adapter. Local: LiteLLM through the OpenAI-compatible API. Later: Gemini on Vertex AI behind the same
-`LLMClient` protocol. All callers go through `run_json_task`, which hashes inputs, parses JSON, validates and
+"""LLM adapter behind the `LLMClient` protocol. Google Cloud: Gemini on Vertex AI (google-genai SDK, Application
+Default Credentials, i.e. the Cloud Run service account). Local development: any OpenAI-compatible endpoint
+(e.g. a LiteLLM proxy). All callers go through `run_json_task`, which hashes inputs, parses JSON, validates and
 returns a log record (callers persist it)."""
 
 from __future__ import annotations
@@ -46,6 +47,35 @@ class LiteLLMClient:
         return resp.choices[0].message.content or ""
 
 
+class VertexGeminiClient:
+    """Gemini on Vertex AI. JSON output is requested natively (response_mime_type) at temperature 0; the same
+    validators as every other provider still decide whether the output is used."""
+
+    def __init__(self, project: str, location: str, model: str, timeout: float = 60.0, client: Any = None):
+        from google.genai import types
+
+        self.model = model
+        self._types = types
+        if client is None:
+            from google import genai
+
+            client = genai.Client(vertexai=True, project=project, location=location,
+                                  http_options=types.HttpOptions(timeout=int(timeout * 1000)))
+        self._client = client
+
+    def complete(self, system: str, user: str) -> str:
+        cfg = self._types.GenerateContentConfig(system_instruction=system, temperature=0,
+                                                response_mime_type="application/json")
+        resp = self._client.models.generate_content(model=self.model, contents=user, config=cfg)
+        return resp.text or ""
+
+
+def build_llm(s) -> LLMClient:
+    if s.resolved_llm_provider == "vertex":
+        return VertexGeminiClient(s.gcp_project, s.gcp_location, s.vertex_model, s.llm_timeout_seconds)
+    return LiteLLMClient(s.litellm_base_url, s.litellm_api_key, s.llm_model, s.llm_timeout_seconds)
+
+
 _override: LLMClient | None = None
 _override_set = False
 _lock = threading.Lock()
@@ -72,7 +102,7 @@ def get_llm() -> LLMClient | None:
         return None
     with _lock:
         if _cached is None:
-            _cached = LiteLLMClient(s.litellm_base_url, s.litellm_api_key, s.llm_model, s.llm_timeout_seconds)
+            _cached = build_llm(s)
     return _cached
 
 

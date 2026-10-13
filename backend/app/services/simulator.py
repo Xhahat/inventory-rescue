@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
-# Short-dated clearance uplift: a 30% markdown lifts demand for the marked lot by 1 + 3.0 * 0.30 = 90%.
-MARKDOWN_ELASTICITY = 3.0
 EPS = 1e-9
+
+# Concave markdown response: extra clearance demand = base * A * (1 - exp(-discount / s)).
+# Deeper discounts help less and less (diminishing returns). A = saturation uplift, s = discount scale.
+# These are assumptions per category; replace them with values measured from past markdowns.
+CATEGORY_ELASTICITY: dict[str, tuple[float, float]] = {
+    "Beverages": (1.8, 0.25),
+    "Snacks": (1.6, 0.25),
+    "Breakfast & Spreads": (1.3, 0.30),
+    "Protein": (1.1, 0.30),
+    "Supplements": (0.8, 0.30),
+}
+DEFAULT_ELASTICITY = (1.4, 0.28)
+
+
+def markdown_uplift(discount_pct: float, category: str | None = None) -> float:
+    """Extra demand (as a multiple of base demand) created by a markdown of `discount_pct` (0..1)."""
+    a, s = CATEGORY_ELASTICITY.get(category or "", DEFAULT_ELASTICITY)
+    return a * (1.0 - math.exp(-max(0.0, discount_pct) / s))
 
 
 @dataclass(frozen=True)
@@ -45,6 +62,8 @@ class ProductEconomics:
 @dataclass
 class SimResult:
     units_sold: float = 0.0
+    demand_units: float = 0.0
+    incremental_units: float = 0.0
     unmet_units: float = 0.0
     lost_margin: float = 0.0
     expired_units: float = 0.0
@@ -58,6 +77,7 @@ class SimResult:
     first_stockout_day: int | None = None
     expired_by_lot: dict[str, float] = field(default_factory=dict)
     daily_stock: list[float] = field(default_factory=list)
+    final_lots: list[Lot] = field(default_factory=list)  # stock left after the last day (for rolling re-plans)
 
 
 def simulate(
@@ -66,14 +86,18 @@ def simulate(
     inbound: Sequence[Inbound],
     demand: Sequence[float],
     markdown: Markdown | None = None,
+    uplift: float | None = None,
 ) -> SimResult:
     """Simulate len(demand) days. Day order: expire -> arrivals -> sales (FEFO) -> record stock.
 
     Lost margin counts only unmet *base* demand. During a markdown, base-demand units sold from the marked lot
-    carry the full discount as markdown cost (cannibalised revenue). Extra clearance units (uplift) are served
-    only from the marked lot; they would otherwise not sell, so their markdown cost is only the amount sold
-    below unit cost, max(0, cost - discounted price).
+    carry the full discount as markdown cost (own-SKU cannibalisation). Extra clearance units (uplift, see
+    `markdown_uplift`) are served only from the marked lot; they would otherwise not sell, so their markdown cost
+    is only the amount sold below unit cost, max(0, cost - discounted price). Cross-SKU cannibalisation is
+    priced by the caller from `incremental_units`.
     """
+    if markdown is not None and uplift is None:
+        uplift = markdown_uplift(markdown.discount_pct)
     stock: list[list] = [[l.lot_id, float(l.qty), int(l.expiry_day)] for l in lots if l.qty > EPS]
     res = SimResult()
     horizon = len(demand)
@@ -98,6 +122,7 @@ def simulate(
 
         md_active = markdown is not None and day >= markdown.start_day
         base = max(0.0, float(demand[day]))
+        res.demand_units += base
         remaining = base
         for lot in stock:
             if remaining <= EPS:
@@ -109,11 +134,12 @@ def simulate(
             remaining -= take
             _book_sale(res, econ, take, md_active and lot[0] == markdown.lot_id, markdown)
         if md_active:
-            extra = base * MARKDOWN_ELASTICITY * markdown.discount_pct
+            extra = base * uplift
             for lot in stock:
                 if lot[0] == markdown.lot_id and lot[1] > EPS and extra > EPS:
                     take = min(lot[1], extra)
                     lot[1] -= take
+                    res.incremental_units += take
                     _book_sale(res, econ, take, True, markdown, incremental=True)
         stock = [l for l in stock if l[1] > EPS]
         if remaining > EPS:
@@ -127,6 +153,7 @@ def simulate(
     res.expiry_writeoff = res.expired_units * econ.unit_cost
     res.ending_units = sum(l[1] for l in stock)
     res.ending_value = res.ending_units * econ.unit_cost
+    res.final_lots = [Lot(l[0], l[1], l[2]) for l in stock]
     return res
 
 

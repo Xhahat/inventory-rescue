@@ -119,7 +119,8 @@ def test_value_excludes_cash_and_sums_components(worlds):
     buy = evaluate(ctx, Action(ctx.sku_id, "standard_po", ctx.econ.unit_cost, order_qty=ctx.case_pack * 20), sw)
     assert buy.cash_outlay == pytest.approx(ctx.case_pack * 20 * ctx.econ.unit_cost)
     for o in (idle, buy):
-        assert o.total_loss == pytest.approx(o.lost_margin + o.expiry_writeoff + o.markdown_cost + o.expedite_premium)
+        assert o.total_loss == pytest.approx(o.lost_margin + o.expiry_writeoff + o.markdown_cost
+                                             + o.cannibalisation + o.expedite_premium)
     assert buy.lost_margin < idle.lost_margin
 
 

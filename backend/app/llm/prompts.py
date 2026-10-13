@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 OPEN, CLOSE = "<<<UNTRUSTED_TEXT>>>", "<<<END_UNTRUSTED_TEXT>>>"
 
 GUARD = (
@@ -39,19 +39,18 @@ def signal_user(message: str, catalog: list[dict], suppliers: list[dict], open_p
     )
 
 
-FORECAST_SYSTEM = f"""You are a demand forecaster for a food/nutrition brand.
+FORECAST_SYSTEM = f"""You are a demand analyst for a food/nutrition brand. A statistical model has already produced a
+baseline daily forecast (statistical_baseline_p50) from history with known past events removed.
 {GUARD}
-Given a JSON summary (56-day daily sales history, day-of-week profile, confirmed events, promotions, holidays,
-weather, competitor prices and social signals), forecast daily unit demand for the next {{horizon}} days.
-Return {{"p10": [{{horizon}} numbers], "p50": [{{horizon}} numbers], "p90": [{{horizon}} numbers],
-"drivers": ["short reason", ...]}}. Values must be non-negative with p10 <= p50 <= p90 for every day.
-Do not exceed recent peaks unless a listed event justifies it. Confirmed events are already approved by the
-operator: inside each event window, scale your baseline p10/p50/p90 by the event multiplier (e.g. 3 means about
-three times the normal daily demand for those dates). At most 5 drivers."""
-
-
-def forecast_system(horizon: int) -> str:
-    return FORECAST_SYSTEM.replace("{horizon}", str(horizon))
+Your only job is to judge how strongly each known upcoming event will move demand for THIS product.
+For every entry in adjustable_events you may return a multiplier that replaces its prior_multiplier
+(1.0 = no effect; keep the prior if you have no reason to change it). Allowed range: 0.5x to 2x the prior,
+and within 0.3..3. fixed_confirmed_events are operator-approved and cannot be changed; do not repeat them.
+Optionally add at most 2 extra_adjustments for effects that no listed event covers (e.g. a festival that matters
+for this product); each multiplier must be within 0.8..1.25 and dates must fall inside the forecast horizon.
+Return {{"event_multipliers": {{"<event id>": number, ...}},
+"extra_adjustments": [{{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "multiplier": number, "reason": "..."}}],
+"drivers": ["short reason", ...]}} with at most 5 drivers."""
 
 
 def forecast_user(summary: dict) -> str:

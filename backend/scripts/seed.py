@@ -319,8 +319,8 @@ def main(argv: list[str] | None = None) -> None:
         with session_factory()() as db:
             res = state.refresh_forecasts(db, force=args.force_forecast)
             methods = list(res["computed"].values())
-            print(f"forecasts: computed={len(methods)} llm={methods.count('llm')} "
-                  f"fallback={methods.count('fallback')} reused={len(res['reused'])}")
+            print(f"forecasts: computed={len(methods)} hybrid={methods.count('hybrid')} "
+                  f"statistical={methods.count('statistical')} reused={len(res['reused'])}")
             print("alerts:", plans.recompute_alerts(db))
 
 

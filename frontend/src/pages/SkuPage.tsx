@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceLine } from 'recharts';
 import { api, inr, num, pct, waitForJob } from '../api';
 import type { Job, SkuDetail, SkuRow } from '../api';
-import { AlertList, Badge, Card, ErrorBox, MethodBadge, Spinner } from '../ui';
+import { AlertList, Badge, Card, ErrorBox, MethodBadge, PriorityBadge, Spinner } from '../ui';
 
 function SkuList() {
   const [rows, setRows] = useState<SkuRow[] | null>(null);
@@ -42,7 +42,7 @@ function SkuList() {
               {shown.map((r) => (
                 <tr key={r.sku_id} className="clickable" onClick={() => (window.location.hash = `#/sku/${r.sku_id}`)}>
                   <td>
-                    <a href={`#/sku/${r.sku_id}`}>{r.sku_id}</a>
+                    <a href={`#/sku/${r.sku_id}`}>{r.sku_id}</a> <PriorityBadge priority={r.priority} overridden={r.priority_overridden} />
                   </td>
                   <td>{r.name}</td>
                   <td>{r.category}</td>
@@ -123,6 +123,16 @@ function Detail({ skuId }: { skuId: string }) {
     }
   };
 
+  const setPriority = async (p: 'auto' | 'hero' | 'standard') => {
+    setError(null);
+    try {
+      await api.setPriority(skuId, p);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
   if (error && !d) return <ErrorBox error={error} />;
   if (!d) return <Spinner label="Loading…" />;
   const sup = d.supplier;
@@ -143,6 +153,23 @@ function Detail({ skuId }: { skuId: string }) {
           <p className="muted">
             {d.category} · cost {inr(d.unit_cost)} · price {inr(d.unit_price)} · case pack {d.case_pack} · MOQ{' '}
             {d.moq} · shelf life {d.shelf_life_days} d
+          </p>
+          <p className="small">
+            Service priority{' '}
+            <span className="segmented">
+              {(['auto', 'hero', 'standard'] as const).map((p) => {
+                const active = p === 'auto' ? !d.priority.overridden : d.priority.overridden && d.priority.priority === p;
+                return (
+                  <button key={p} className={active ? 'active' : ''} onClick={() => setPriority(p)} disabled={active}>
+                    {p === 'auto' ? `auto (${d.priority.auto})` : p}
+                  </button>
+                );
+              })}
+            </span>{' '}
+            <span className="muted">
+              {d.priority.priority === 'hero' ? 'Hero' : 'Standard'}: each unit short costs an extra{' '}
+              {inr(d.priority.goodwill_per_unit)} in the planner (lost repeat business). Re-plan to apply.
+            </span>
           </p>
         </div>
         <div className="toolbar">
@@ -179,8 +206,8 @@ function Detail({ skuId }: { skuId: string }) {
             ) : (
               <p className="muted">None reported.</p>
             )}
-            {d.forecast.method !== 'llm' && d.forecast.fallback_reason && (
-              <p className="muted small">Why fallback: {d.forecast.fallback_reason}</p>
+            {d.forecast.method !== 'hybrid' && d.forecast.fallback_reason && (
+              <p className="muted small">Why no model adjustment: {d.forecast.fallback_reason}</p>
             )}
           </div>
           <div>
@@ -294,6 +321,19 @@ function Detail({ skuId }: { skuId: string }) {
                 <td>Terms</td>
                 <td className="num">{sup.terms}</td>
               </tr>
+            </tbody>
+          </table>
+
+          <h3>Supplier-delay cases used by the planner</h3>
+          <table className="table compact">
+            <tbody>
+              {d.supply_cases.map((c) => (
+                <tr key={c.label}>
+                  <td>{c.label}</td>
+                  <td className="num">{pct(c.weight)}</td>
+                  <td className="num">new PO arrives day {c.new_po_arrival_day ?? '—'}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
 

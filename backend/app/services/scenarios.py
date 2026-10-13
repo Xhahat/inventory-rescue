@@ -125,7 +125,6 @@ def apply(world: World, ctxs: list[SkuContext], spec: ScenarioSpec) -> World:
         ctx = by_id[sku_id]
         hit = sku_id in affected
         paths = sw.demand_paths
-        std, exp, inbound = sw.standard_arrival_day, sw.expedite_arrival_day, list(sw.open_inbound)
         if hit and spec.demand_multiplier != 1.0:
             new_paths = []
             for w, p in paths:
@@ -133,15 +132,19 @@ def apply(world: World, ctxs: list[SkuContext], spec: ScenarioSpec) -> World:
                 q[spec.start_day:spec.end_day] *= spec.demand_multiplier
                 new_paths.append((w, q))
             paths = new_paths
+        exp = sw.expedite_arrival_day
+        new = replace(sw, demand_paths=paths)
         if spec.lead_time_delta_days and (ctx.supplier_id == spec.delay_supplier if spec.delay_supplier else hit):
             d = spec.lead_time_delta_days
-            std = None if std is None else max(0, std + d)
-            inbound = [Inbound(i.ref_id, i.qty, None if i.arrival_day is None else max(0, i.arrival_day + d))
-                       for i in inbound]
+            new = new.map_supply(
+                lambda s, d=d: None if s is None else max(0, s + d),
+                lambda ib, d=d: [Inbound(i.ref_id, i.qty, None if i.arrival_day is None else max(0, i.arrival_day + d))
+                                 for i in ib])
         if spec.supplier_outage and ctx.supplier_id == spec.supplier_outage:
-            std = exp = None
-            inbound = [Inbound(i.ref_id, i.qty, None if i.arrival_day is None or
-                               spec.start_day <= i.arrival_day < spec.end_day else i.arrival_day) for i in inbound]
-        skus[sku_id] = replace(sw, demand_paths=paths, standard_arrival_day=std, expedite_arrival_day=exp,
-                               open_inbound=inbound)
+            exp = None
+            new = new.map_supply(
+                lambda s: None,
+                lambda ib: [Inbound(i.ref_id, i.qty, None if i.arrival_day is None or
+                                    spec.start_day <= i.arrival_day < spec.end_day else i.arrival_day) for i in ib])
+        skus[sku_id] = replace(new, expedite_arrival_day=exp)
     return World(f"{world.name}+scenario", skus, {**world.description, "scenario": spec.model_dump()})
