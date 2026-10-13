@@ -123,7 +123,9 @@ def test_scenario_and_backtest(client):
     job = client.post("/api/backtest").json()
     assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "done"
     bt = client.get("/api/backtest").json()
-    assert bt["skus"] == 10 and bt["hybrid_valid_forecasts"] == 0 and len(bt["per_origin"]) == 3
+    assert bt["skus"] > 10 and bt["hybrid_valid_forecasts"] == 0 and len(bt["per_origin"]) == 3
+    assert bt["sku_selection"]["text_only_event"] and set(bt["sku_selection"]["top_volume"]) <= \
+        {r["sku_id"] for r in bt["per_sku"]}
     assert bt["pooled"]["statistical"]["wape"] > 0 and 0 < bt["pooled"]["statistical"]["coverage_p10_p90"] <= 1
     assert "hybrid" not in bt["pooled"]
 

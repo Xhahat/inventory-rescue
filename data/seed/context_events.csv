@@ -4,12 +4,14 @@ weather,2026-07-01,2026-09-15,,Beverages,-0.1,Monsoon season; cold beverages sof
 promotion,2026-08-13,2026-08-17,,Protein,0.25,Independence Day sale: 15% off protein
 holiday,2026-08-15,2026-08-15,,,0.0,Independence Day
 holiday,2026-09-12,2026-09-16,,Snacks,0.25,Ganesh Chaturthi festive snacking
-social,2026-09-01,2026-09-30,SKU-007,,0.2,#makhana trending on Instagram reels
-competitor,2026-09-20,2026-10-05,SKU-001,,-0.15,Rival whey brand 20% off on Amazon
-competitor,2026-09-20,2026-10-05,SKU-002,,-0.15,Rival whey brand 20% off on Amazon
 promotion,2026-09-25,2026-09-30,,Supplements,0.2,Wellness week bundle offer
-weather,2026-10-13,2026-10-31,,Beverages,0.1,Post-monsoon heat forecast (IMD)
+social,2026-09-01,2026-09-30,SKU-007,,,'Makhana chaat' reels trend on Instagram all through September; several fitness creators tag our Peri Peri makhana in unpaid posts
+promotion,2026-09-08,2026-09-14,SKU-015,,,Blinkit runs a homepage banner for our Electrolyte Drink Orange 500ml from Sep 8 to Sep 14
+competitor,2026-09-20,2026-10-05,,Protein,,"MuscleKart 'Whey Wednesday' sale: 20% off its 1kg whey protein tubs on Amazon, Sep 20 - Oct 5"
+competitor,2026-10-01,2026-10-28,,Protein,,Competitor FitBar recalls its whey protein bars nationwide from Oct 1 after an FSSAI allergen alert; FitBar expects shelves to stay empty for about four weeks
 holiday,2026-10-18,2026-10-21,,Snacks,0.2,Dussehra / Navratri festive demand
 promotion,2026-11-01,2026-11-09,,Snacks,0.35,Diwali gift-box promotion: snacks 15% off
 holiday,2026-11-08,2026-11-08,,,0.0,Diwali
 competitor,2026-10-10,2026-10-25,SKU-001,,-0.1,Rival whey festive discount 15%
+weather,2026-10-13,2026-11-02,,Beverages,,"IMD heatwave alert: Mumbai, Pune and Bengaluru expected at 36-38 C from Oct 20, spell likely to last till month-end"
+promotion,2026-10-15,2026-10-21,SKU-018,,,"Swiggy Instamart features our Oat Milk Barista 1L in a homepage banner, Oct 15-21"

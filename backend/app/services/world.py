@@ -109,25 +109,43 @@ class World:
 
 @dataclass
 class Action:
+    """One SKU decision. A staggered buy places `order_qty` today and schedules a second standard PO of
+    `later_qty` units to be placed `later_day` days from now (re-confirmed at that weekly review). The budget
+    counts both tranches; only the first is paid today."""
     sku_id: str
-    kind: str  # defer | standard_po | expedited_po | markdown | markdown+standard_po | markdown+expedited_po
+    kind: str  # defer | standard_po | expedited_po | staggered_po | markdown | markdown+standard_po | markdown+expedited_po
     unit_cost: float
     expedite_premium_pct: float = 0.0
     order_qty: int = 0
     expedite: bool = False
     markdown: Markdown | None = None
+    later_qty: int = 0
+    later_day: int = 0
 
     @property
     def expedite_premium(self) -> float:
         return self.order_qty * self.unit_cost * self.expedite_premium_pct if self.expedite else 0.0
 
     @property
-    def cash_outlay(self) -> float:
+    def cash_today(self) -> float:
         return self.order_qty * self.unit_cost + self.expedite_premium
+
+    @property
+    def cash_later(self) -> float:
+        return self.later_qty * self.unit_cost
+
+    @property
+    def cash_outlay(self) -> float:
+        return self.cash_today + self.cash_later
+
+    def capital_cost(self, horizon: int, annual_rate: float) -> float:
+        """Cost of tying up cash from the order day to the end of the horizon (working capital)."""
+        days_now, days_later = horizon, max(0, horizon - self.later_day)
+        return annual_rate / 365.0 * (self.cash_today * days_now + self.cash_later * days_later)
 
     def key(self) -> tuple:
         md = None if self.markdown is None else (self.markdown.lot_id, self.markdown.discount_pct, self.markdown.start_day)
-        return (self.kind, self.order_qty, self.expedite, md)
+        return (self.kind, self.order_qty, self.expedite, md, self.later_qty, self.later_day)
 
     def to_dict(self) -> dict:
         return {
@@ -140,7 +158,10 @@ class Action:
                 "discount_pct": self.markdown.discount_pct,
                 "start_day": self.markdown.start_day,
             },
+            "later_qty": self.later_qty,
+            "later_day": self.later_day,
             "cash_outlay": round(self.cash_outlay, 2),
+            "cash_today": round(self.cash_today, 2),
             "expedite_premium": round(self.expedite_premium, 2),
         }
 
@@ -151,6 +172,7 @@ class Action:
             sku_id=d["sku_id"], kind=d["kind"], unit_cost=unit_cost, expedite_premium_pct=premium_pct,
             order_qty=int(d.get("order_qty", 0)), expedite=bool(d.get("expedite", False)),
             markdown=None if not md else Markdown(md["lot_id"], float(md["discount_pct"]), int(md.get("start_day", 0))),
+            later_qty=int(d.get("later_qty", 0) or 0), later_day=int(d.get("later_day", 0) or 0),
         )
 
 
@@ -181,6 +203,7 @@ class Outcome:
     service_penalty: float = 0.0
     first_stockout_day: int | None = None
     arrival_day: int | None = None
+    later_arrival_day: int | None = None
     expired_by_lot: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -214,6 +237,8 @@ def evaluate(ctx: SkuContext, action: Action, sw: SkuWorld) -> Outcome:
     if action.order_qty > 0:
         nominal = sw.expedite_arrival_day if action.expedite else sw.standard_arrival_day
     out = Outcome(arrival_day=nominal)
+    if action.later_qty > 0 and sw.standard_arrival_day is not None:
+        out.later_arrival_day = sw.standard_arrival_day + action.later_day
     cases = sw.cases()
     total_w = (sum(w for w, _ in sw.demand_paths) or 1.0) * (sum(w for w, _, _ in cases) or 1.0)
     first_days: list[tuple[float, int]] = []
@@ -223,6 +248,9 @@ def evaluate(ctx: SkuContext, action: Action, sw: SkuWorld) -> Outcome:
         if action.order_qty > 0:
             arrival = sw.expedite_arrival_day if action.expedite else std
             inbound = open_inbound + [Inbound(f"NEW-{ctx.sku_id}", float(action.order_qty), arrival)]
+        if action.later_qty > 0:
+            inbound = inbound + [Inbound(f"NEW2-{ctx.sku_id}", float(action.later_qty),
+                                         None if std is None else std + action.later_day)]
         for w, path in sw.demand_paths:
             r: SimResult = simulate(ctx.econ, ctx.lots, inbound, path, md, uplift)
             f = w * cw / total_w

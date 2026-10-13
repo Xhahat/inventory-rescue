@@ -119,7 +119,9 @@ def _active(e: SignalEvent, as_of: date) -> bool:
 
 def demand_events(snap: Snapshot, sku_id: str, include_signals: bool = True) -> list[fc.EventLike]:
     """Confirmed demand signals (fixed multipliers) + SKU/category-scoped context events (priors = 1 + value).
-    Context events without a SKU or category scope are informational only."""
+    Text-only context events (value None) are included with prior_known=False and multiplier 1.0: their effect is
+    unknown until a model estimate from the description is validated. Context events without a SKU or category
+    scope are informational only."""
     p = snap.products[sku_id]
     out = []
     if include_signals:
@@ -131,7 +133,10 @@ def demand_events(snap: Snapshot, sku_id: str, include_signals: bool = True) -> 
                                         f"Confirmed signal EV-{e.id}: {e.event_type.replace('_', ' ')}"))
     for c in snap.context:
         scoped = c.sku_id == sku_id or (c.sku_id is None and c.category is not None and c.category == p.category)
-        if scoped and c.value and 1.0 + c.value > 0:
+        if scoped and c.value is None:
+            out.append(fc.EventLike(f"CTX-{c.id}", c.kind, c.start_date, c.end_date, 1.0,
+                                    f"{c.kind.capitalize()} CTX-{c.id}: {c.description}", "context", False))
+        elif scoped and c.value and 1.0 + c.value > 0:
             out.append(fc.EventLike(f"CTX-{c.id}", c.kind, c.start_date, c.end_date, 1.0 + float(c.value),
                                     f"{c.kind.capitalize()} CTX-{c.id}: {c.description}", "context"))
     return out
@@ -155,7 +160,7 @@ def context_rows(snap: Snapshot, sku_id: str) -> list[dict]:
         if c.kind == "promotion" and c.sku_id is None and c.category is None:
             continue
         rows.append({"kind": c.kind, "start": c.start_date.isoformat(), "end": c.end_date.isoformat(),
-                     "value": c.value, "note": c.description[:120]})
+                     "value": c.value, "text_only": c.value is None, "note": c.description[:160]})
     rows.sort(key=lambda r: (r["start"], r["kind"]))
     return rows
 

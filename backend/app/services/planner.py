@@ -18,6 +18,8 @@ PARTIAL_FRACTIONS = (0.15, 0.3, 0.45, 0.6, 0.75, 0.9)
 MARKDOWN_DISCOUNTS = (0.2, 0.35, 0.5)
 MARKDOWN_LATE_START_DAYS = 7
 MIN_BENEFIT_INR = 1.0
+STAGGER_FIRST_SHARES = (0.35, 0.5, 0.65)
+STAGGER_DAYS = (7, 14)  # aligned with the weekly review cadence
 
 
 # ---------------------------------------------------------------- knapsack
@@ -73,9 +75,10 @@ def position(ctx: SkuContext, sw: SkuWorld, horizon: int) -> float:
 
 
 def candidate_actions(ctx: SkuContext, sw: SkuWorld, rm: ReorderMath, defer_out: Outcome,
-                      budget: float | Sequence[float]) -> list[Action]:
+                      budget: float | Sequence[float], stagger: bool = False) -> list[Action]:
     """Menu of actions for one SKU. `budget` may be several budgets (for the budget frontier); the quantity
-    ladder is the union over them so every budget level has affordable partial buys."""
+    ladder is the union over them so every budget level has affordable partial buys. With `stagger`, split
+    buys are added: part today, the rest as a standard PO placed 7 or 14 days later."""
     horizon = len(sw.demand_paths[0][1])
     budgets = [float(budget)] if isinstance(budget, (int, float)) else [float(b) for b in budget]
     shortfalls = []
@@ -122,7 +125,38 @@ def candidate_actions(ctx: SkuContext, sw: SkuWorld, rm: ReorderMath, defer_out:
         for q, exp in po_opts:
             acts.append(Action(kind="markdown+expedited_po" if exp else "markdown+standard_po",
                                order_qty=q, expedite=exp, markdown=md, **base))
+    if stagger:
+        acts.extend(staggered_actions(ctx, sw, qtys, po_opts, horizon))
     return acts
+
+
+def staggered_actions(ctx: SkuContext, sw: SkuWorld, qtys: Sequence[int], po_opts: Sequence[tuple[int, bool]],
+                      horizon: int) -> list[Action]:
+    """Split buys: tranche 1 today (standard or expedited), tranche 2 a standard PO placed on a later weekly
+    review. Only splits where both tranches respect MOQ / case pack and tranche 2 can land inside the horizon."""
+    if sw.standard_arrival_day is None:
+        return []
+    base = dict(sku_id=ctx.sku_id, unit_cost=ctx.econ.unit_cost, expedite_premium_pct=ctx.expedite_premium_pct)
+    exp_ok = any(e for _, e in po_opts)
+    std_ok = any(not e for _, e in po_opts)
+    seen: set[tuple] = set()
+    out: list[Action] = []
+    for total in qtys:
+        for share in STAGGER_FIRST_SHARES:
+            q1 = round_order_qty(total * share, ctx.moq, ctx.case_pack)
+            q2 = round_order_qty(total - q1, ctx.moq, ctx.case_pack)
+            if q1 <= 0 or q2 <= 0 or q1 >= total:
+                continue
+            for day in STAGGER_DAYS:
+                if sw.standard_arrival_day + day >= horizon:
+                    continue
+                for exp in (False, True):
+                    if (exp and not exp_ok) or (not exp and not std_ok) or (q1, q2, day, exp) in seen:
+                        continue
+                    seen.add((q1, q2, day, exp))
+                    out.append(Action(kind="staggered_po", order_qty=q1, expedite=exp, later_qty=q2, later_day=day,
+                                      **base))
+    return out
 
 
 # ---------------------------------------------------------------- planner
@@ -153,6 +187,10 @@ class PlanResult:
     @property
     def cash_used(self) -> float:
         return sum(d.action.cash_outlay for d in self.decisions)
+
+    @property
+    def cash_today(self) -> float:
+        return sum(d.action.cash_today for d in self.decisions)
 
     @property
     def actions(self) -> list[Action]:
@@ -189,7 +227,8 @@ def _reorder(ctx: SkuContext, sw: SkuWorld, z: float) -> ReorderMath:
                         position(ctx, sw, horizon), lead_time_override=lt)
 
 
-def prepare_menu(ctxs: Sequence[SkuContext], world: World, budgets: float | Sequence[float], z: float) -> Menu:
+def prepare_menu(ctxs: Sequence[SkuContext], world: World, budgets: float | Sequence[float], z: float,
+                 stagger: bool = False) -> Menu:
     """Generate and score every candidate action once; the menu can then be solved at any budget up to
     max(budgets) (budget frontier) without re-simulating."""
     out = []
@@ -197,7 +236,7 @@ def prepare_menu(ctxs: Sequence[SkuContext], world: World, budgets: float | Sequ
         sw = world.skus[ctx.sku_id]
         rm = _reorder(ctx, sw, z)
         d_out = evaluate(ctx, defer(ctx), sw)
-        acts = candidate_actions(ctx, sw, rm, d_out, budgets)
+        acts = candidate_actions(ctx, sw, rm, d_out, budgets, stagger)
         o = [d_out] + [evaluate(ctx, a, sw) for a in acts[1:]]
         keep = [0] + [i for i in range(1, len(acts)) if o[i].objective < d_out.objective - MIN_BENEFIT_INR]
         out.append(SkuMenu(ctx, sw, rm, [acts[i] for i in keep], [o[i] for i in keep]))
@@ -219,12 +258,20 @@ def score_actions(ctxs: Sequence[SkuContext], world: World, actions: Sequence[Ac
                       sum(d.defer_outcome.total_loss for d in decisions))
 
 
-def solve_menu(menu: Menu, budget: float) -> PlanResult:
-    """Exact optimum of the menu under `budget`. Objective = financial loss + service penalty (priority SKUs)."""
-    groups = [[(a.cash_outlay, o.objective) for a, o in zip(m.actions, m.outcomes)] for m in menu.skus]
+def solve_menu(menu: Menu, budget: float, stagger: bool = False, capital_rate: float = 0.0) -> PlanResult:
+    """Exact optimum of the menu under `budget`. Objective = financial loss + service penalty (priority SKUs),
+    plus, when `capital_rate` > 0, the cost of tying up cash (which is what makes a later tranche cheaper).
+    Staggered buys on the menu are only eligible when `stagger` is set."""
+    idx = [[i for i, a in enumerate(m.actions) if stagger or a.later_qty == 0] for m in menu.skus]
+    groups = []
+    for m, ii in zip(menu.skus, idx):
+        h = len(m.sw.demand_paths[0][1])
+        groups.append([(m.actions[i].cash_outlay,
+                        m.outcomes[i].objective + (m.actions[i].capital_cost(h, capital_rate) if capital_rate else 0.0))
+                       for i in ii])
     picks, _ = solve_mckp(groups, budget)
-    decisions = [SkuDecision(m.ctx, m.actions[i], m.outcomes[i], m.defer_outcome, m.reorder, len(m.actions),
-                             list(m.sw.notes), list(m.sw.event_ids)) for m, i in zip(menu.skus, picks)]
+    decisions = [SkuDecision(m.ctx, m.actions[ii[i]], m.outcomes[ii[i]], m.defer_outcome, m.reorder, len(ii),
+                             list(m.sw.notes), list(m.sw.event_ids)) for m, ii, i in zip(menu.skus, idx, picks)]
     return PlanResult(
         decisions=decisions,
         budget=budget,
@@ -252,6 +299,10 @@ def action_reasons(dec: SkuDecision, as_of: date) -> list[str]:
             r.append(f"Lot {lot_id}: {q:.0f} units expected to expire unsold")
     if dec.action.expedite:
         r.append("Standard lead time arrives too late; expedited freight pays for itself")
+    if dec.action.later_qty:
+        r.append(f"Split buy: {dec.action.order_qty} units now, {dec.action.later_qty} more ordered on "
+                 f"{as_of + timedelta(days=dec.action.later_day)} (re-confirmed at that weekly review); "
+                 f"later stock is fresher and less cash is tied up")
     if dec.ctx.priority == "hero" and dec.action.order_qty:
         r.append(f"Priority SKU: stockouts also carry a service penalty of INR {dec.ctx.goodwill_per_unit:.0f}/unit "
                  f"(lost repeat business)")

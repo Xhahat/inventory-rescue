@@ -21,6 +21,7 @@ export type Health = { status: string; db: string; llm_configured: boolean; llm_
 export type PlanAction = {
   id: string; rank: number; sku_id: string; sku_name: string; category: string; supplier_id: string;
   kind: string; label: string; order_qty: number; expedite: boolean; arrival_date: string | null;
+  later_qty?: number; later_order_date?: string | null; later_arrival_date?: string | null; cash_today?: number;
   markdown_lot_id: string | null; discount_pct: number | null; cash_outlay: number; expedite_premium: number;
   expected_loss_if_deferred: number; expected_loss_with_action: number; loss_avoided: number;
   forecast_method: string; reasons: string[]; record_ids: string[];
@@ -42,6 +43,27 @@ export type FrontierRow = {
 };
 export type RollingRun = {
   total_loss: number; fill_rate: number | null; hero_fill_rate: number | null; cash_spent: number; orders_placed: number;
+  cash_day0?: number; capital_cost?: number; loss_incl_service?: number; tranches_released?: number;
+};
+export type Strategy = 'commit_now' | 'staggered' | 'reserve' | 'lean';
+export type PlanOption = {
+  key: Strategy; label: string; description: string; is_current: boolean; operating_budget: number;
+  cash_today: number; cash_scheduled: number; cash_committed: number; cash_uncommitted: number;
+  planning_loss: number; planning_objective: number; capital_cost: number; eval_loss_no_review: number;
+  eval_fill_rate: number | null; eval_hero_fill_rate: number | null; n_actions: number; n_staggered: number;
+};
+export type OptionWorldStats = {
+  total_loss: Dist; loss_incl_service: Dist; capital_cost: number; fill_rate: number; hero_fill_rate: number;
+  cash_spent: number; tranches_released: number;
+};
+export type OptionsEval = {
+  n_calm: number; n_shock: number; notes: string;
+  best: Partial<Record<'actual' | 'calm' | 'shock', Strategy>>;
+  best_service: Partial<Record<'actual' | 'calm' | 'shock', Strategy>>;
+  options: Record<string, {
+    actual: RollingRun; calm?: OptionWorldStats; shock?: OptionWorldStats;
+    vs_commit_now?: Partial<Record<'calm' | 'shock', Dist & { win_rate: number }>>;
+  }>;
 };
 export type Robustness = {
   status: 'queued' | 'done' | 'failed'; job_id?: number; error?: string; computed_at?: string; notes?: string;
@@ -55,6 +77,7 @@ export type Robustness = {
     mc: Record<string, { total_loss: Dist; fill_rate: Dist }>;
     comparisons: Record<string, Dist & { win_rate: number }>; notes: string;
   };
+  options?: OptionsEval | null;
   signal_ablation?: {
     status: string; note?: string; n_changed_skus?: number;
     actual_world?: { with_signals: number; without_signals: number; value_of_signals: number };
@@ -76,6 +99,8 @@ export type Plan = {
   baseline_actions: { sku_id: string; kind: string; order_qty: number; cash_outlay: number }[];
   summary: {
     budget: number; cash_used: number; cash_remaining: number; expected_loss_no_action: number;
+    strategy?: Strategy; strategy_label?: string; cash_today?: number; cash_scheduled?: number;
+    options?: PlanOption[];
     expected_loss_plan: number; n_actions: number; skus_at_risk: number;
     forecast_methods: Record<string, number>;
     scorecard: {
@@ -153,9 +178,17 @@ export type Backtest = {
   pooled: Record<string, { wape: number | null; coverage_p10_p90: number | null; n_points: number }>;
   per_origin: Record<string, string | number | null>[];
   wape_statistical_on_hybrid_skus: number | null;
+  hybrid_attempted?: number;
+  statistical_on_hybrid_points?: { wape: number | null; coverage_p10_p90: number | null; n_points: number } | null;
+  text_only_subset?: {
+    n_series: number;
+    statistical: { wape: number | null; coverage_p10_p90: number | null; n_points: number };
+    hybrid: { wape: number | null; coverage_p10_p90: number | null; n_points: number };
+  } | null;
+  sku_selection?: { top_volume: string[]; context_event: string[]; text_only_event: string[] };
   per_sku: {
     sku_id: string; wape_naive: number | null; wape_statistical: number | null; hybrid_method: string | null;
-    wape_hybrid: number | null;
+    wape_hybrid: number | null; selected_by?: string; text_only_event?: boolean;
   }[];
   computed_at: string; note: string;
 };
@@ -231,7 +264,7 @@ export const api = {
       throw e;
     }
   },
-  createPlan: (budget: number) => post<Plan>('/api/plans', { budget }),
+  createPlan: (budget: number, strategy: Strategy = 'commit_now') => post<Plan>('/api/plans', { budget, strategy }),
   approvePlan: (id: number) => post<Plan>(`/api/plans/${id}/approve`),
   plan: (id: number) => req<Plan>(`/api/plans/${id}`),
   overridePlan: (id: number, items: OverrideItem[]) => post<Plan>(`/api/plans/${id}/overrides`, { items }),

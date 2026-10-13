@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, pct, waitForJob } from '../api';
+import { api, inr, pct, waitForJob } from '../api';
 import type { IngestResult, Job, Signal } from '../api';
-import { Badge, Card, ErrorBox, MethodBadge, Spinner } from '../ui';
+import { evalApi } from '../api_eval';
+import type { EvalJob, ExtractionEval, ExtractionMetrics, UnitRow } from '../api_eval';
+import { Badge, Card, ErrorBox, Kpi, MethodBadge, Spinner } from '../ui';
 
 const STATUS_TONE: Record<string, string> = { pending: 'warn', confirmed: 'ok', rejected: 'neutral', invalid: 'bad' };
 const EVENT_LABEL: Record<string, string> = {
@@ -101,6 +103,206 @@ function SignalCard({
         </div>
       )}
     </div>
+  );
+}
+
+function unitText(u: UnitRow, predicted: boolean): string {
+  const m = predicted ? u.predicted_magnitude : u.expected_magnitude;
+  const range = !predicted && u.magnitude_range ? ` [${u.magnitude_range.join('–')}]` : '';
+  return `${EVENT_LABEL[u.event_type] ?? u.event_type} ${u.sku_id}${m !== undefined && m !== null ? ` ${m}` : ''}${range}`;
+}
+
+const METRIC_ROWS: [keyof ExtractionMetrics, string, string][] = [
+  ['precision', 'Precision', 'valid extracted (type, SKU) units that are in the gold set'],
+  ['recall', 'Recall', 'gold (type, SKU) units that were extracted'],
+  ['f1', 'F1', 'harmonic mean of precision and recall'],
+  ['magnitude_accuracy', 'Magnitude within tolerance', 'matched units whose days / multiplier / units are in range'],
+  ['start_date_accuracy', 'Start date (±1 day)', 'demand events with a gold start date'],
+  ['evidence_valid_rate', 'Evidence quote verbatim', 'raw model events whose quote appears in the message'],
+  ['invalid_rate', 'Rejected by validators', 'raw events that never reach the confirm queue'],
+  ['false_positive_rate_no_event', 'False positives on no-event messages', 'lower is better'],
+  ['message_accuracy', 'Messages fully correct', 'no miss, no false positive, magnitudes in range'],
+];
+
+function ExtractionQualityCard() {
+  const [data, setData] = useState<ExtractionEval | null>(null);
+  const [job, setJob] = useState<EvalJob | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [onlyMisses, setOnlyMisses] = useState(true);
+
+  const load = useCallback(
+    () =>
+      evalApi
+        .extraction()
+        .then((r) => {
+          setData(r.result);
+          setJob(r.job);
+        })
+        .catch((e) => setError(e.message)),
+    [],
+  );
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const run = async () => {
+    setError(null);
+    try {
+      const j = await evalApi.runExtraction();
+      setJob(j);
+      const done = await waitForJob(j.id, (x) => setJob(x), 600_000);
+      if (done.status === 'failed') setError(done.error ?? 'evaluation failed');
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const running = job?.status === 'queued' || job?.status === 'running';
+  const v = data?.value_of_signals;
+  const rows = (data?.per_message ?? []).filter((m) => !onlyMisses || !m.correct);
+
+  return (
+    <Card
+      title="Extraction quality"
+      actions={
+        <button className="primary" disabled={running} onClick={run}>
+          {running ? <Spinner label={job?.status} /> : data ? 'Re-run evaluation' : 'Run evaluation'}
+        </button>
+      }
+    >
+      <p className="muted small">
+        The real extraction path (same prompt and validators) on a labelled gold set of inbox messages: supplier
+        emails, WhatsApp notes, Hindi/Hinglish, forwarded threads, retractions, vague maybes, unknown products and
+        no-event messages. The rule-based fallback parser is scored on the same messages for comparison.
+      </p>
+      <ErrorBox error={error} />
+      {job?.status === 'failed' && <p className="error-inline">Last run failed: {job.error}</p>}
+      {!data && !running && <p className="muted">Not evaluated yet.</p>}
+      {data && (
+        <>
+          <p className="muted small">
+            {data.gold_messages} messages · model {data.model ?? 'none'} · as of {data.as_of} · computed{' '}
+            {new Date(data.computed_at).toLocaleString()} · LLM {data.llm_seconds}s (cache {data.cache.hits ?? 0} hits
+            / {data.cache.misses ?? 0} calls){data.llm && data.llm.fallbacks ? ` · ${data.llm.fallbacks} fallbacks` : ''}
+          </p>
+          <table className="table compact">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th className="num">LLM</th>
+                <th className="num">Rule-based</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {METRIC_ROWS.map(([k, label, hint]) => (
+                <tr key={k}>
+                  <td>{label}</td>
+                  <td className="num">{data.llm ? pct(data.llm[k] as number | null, 1) : '—'}</td>
+                  <td className="num">{pct(data.heuristic[k] as number | null, 1)}</td>
+                  <td className="muted small">{hint}</td>
+                </tr>
+              ))}
+              <tr>
+                <td>Gold / predicted units</td>
+                <td className="num">
+                  {data.llm ? `${data.llm.n_gold_units} / ${data.llm.n_predicted_units}` : '—'}
+                </td>
+                <td className="num">
+                  {data.heuristic.n_gold_units} / {data.heuristic.n_predicted_units}
+                </td>
+                <td className="muted small">{data.heuristic.n_no_event_messages} messages have no actionable event</td>
+              </tr>
+            </tbody>
+          </table>
+
+          {v && (
+            <>
+              <h3>Value of extracted signals</h3>
+              <div className="kpis">
+                <Kpi
+                  label="Perfect-information value captured"
+                  value={pct(v.captured_actual, 0)}
+                  sub={`Monte Carlo mean (${v.n_mc_worlds} worlds): ${pct(v.captured_mc, 0)}`}
+                  tone={v.captured_actual !== null && v.captured_actual >= 0.8 ? 'good' : undefined}
+                />
+                <Kpi label="Plan loss, no signals" value={inr(v.actual_world_loss.none)} sub={`MC mean ${inr(v.mc_mean_loss.none)}`} />
+                <Kpi
+                  label={`Plan loss, ${v.extractor === 'llm' ? 'LLM' : 'rule-based'} signals`}
+                  value={inr(v.actual_world_loss.llm)}
+                  sub={`${v.n_signals.llm} signals · MC mean ${inr(v.mc_mean_loss.llm)}`}
+                />
+                <Kpi
+                  label="Plan loss, gold signals"
+                  value={inr(v.actual_world_loss.gold)}
+                  sub={`${v.n_signals.gold} signals · MC mean ${inr(v.mc_mean_loss.gold)}`}
+                />
+              </div>
+              <p className="muted small">
+                Messages {v.messages.join(', ')} (the inbox messages behind evaluation-truth events). {v.note}
+              </p>
+            </>
+          )}
+
+          <div className="toolbar">
+            <h3>Per message</h3>
+            <label className="small">
+              <input type="checkbox" checked={onlyMisses} onChange={(e) => setOnlyMisses(e.target.checked)} /> only
+              messages with errors
+            </label>
+          </div>
+          {rows.length === 0 && <p className="muted small">Every message is fully correct.</p>}
+          {rows.map((m) => (
+            <details key={m.id} className="eval-msg">
+              <summary>
+                <strong>{m.id}</strong> {m.correct ? <Badge kind="ok">correct</Badge> : <Badge kind="bad">errors</Badge>}
+                {m.method !== 'llm' && <Badge kind="warn">{m.method}</Badge>}
+                <span className="muted small">
+                  {' '}
+                  {m.tags.join(', ')} · TP {m.tp} · FP {m.fp} · FN {m.fn}
+                </span>
+              </summary>
+              <blockquote>{m.text}</blockquote>
+              {m.misses.map((u, i) => (
+                <div key={`m${i}`} className="error-inline">
+                  Missed: {unitText(u, false)}
+                </div>
+              ))}
+              {m.false_positives.map((u, i) => (
+                <div key={`f${i}`} className="error-inline">
+                  False positive: {unitText(u, true)}
+                </div>
+              ))}
+              {m.matched
+                .filter((u) => u.magnitude_ok === false || u.start_ok === false)
+                .map((u, i) => (
+                  <div key={`w${i}`} className="error-inline">
+                    Wrong {u.magnitude_ok === false ? `magnitude ${u.predicted_magnitude}` : ''}
+                    {u.start_ok === false ? ` start ${u.predicted_start ?? '?'} (expected ${u.expected_start})` : ''}:{' '}
+                    {unitText(u, false)}
+                  </div>
+                ))}
+              {m.matched
+                .filter((u) => u.magnitude_ok !== false && u.start_ok !== false)
+                .map((u, i) => (
+                  <div key={`ok${i}`} className="muted small">
+                    Matched: {unitText(u, false)} → {u.predicted_magnitude}
+                  </div>
+                ))}
+              {m.invalid.map((x, i) => (
+                <div key={`i${i}`} className="muted small">
+                  Rejected by validator: {EVENT_LABEL[x.event_type] ?? x.event_type} {(x.sku_ids ?? []).join(', ')}:{' '}
+                  {x.reason}
+                </div>
+              ))}
+            </details>
+          ))}
+          <p className="muted small">{data.note}</p>
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -292,6 +494,8 @@ export default function InboxPage() {
         {importMsg && <p>{importMsg}</p>}
         <p className="muted small">Signal magnitudes for demand are multipliers (e.g. 1.6 = {pct(0.6)} uplift).</p>
       </Card>
+
+      <ExtractionQualityCard />
     </div>
   );
 }

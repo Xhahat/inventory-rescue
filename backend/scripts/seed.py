@@ -7,6 +7,12 @@ Story (as-of 2026-10-13, 30-day horizon, INR 50,000 budget):
   * QuickPack Organics (SUP-04) is unreliable; open POs PO-2041/PO-2042 will actually arrive 9 days late.
   * A fitness creator features Peanut Butter Crunchy 1kg (SKU-019): ~2.8x demand Oct 15-24.
   * Cold Brew Coffee lot LOT-013-A (420 units) expires Oct 25, far above expected sell-through.
+  * Amazon suppresses the Kombucha Ginger Lemon listing (SKU-014): ~0.7x demand Oct 14-23.
+  * NutriSource PO-2044 (Omega-3, SKU-026) is held at customs and actually arrives 6 days late.
+
+Context feed: some events carry a numeric prior (value = the true effect, e.g. festivals); "text-only" events
+(value empty) carry only a description. Their true, SKU-specific effect lives in TEXT_ONLY_TRUTH and is used only to
+generate sales and evaluation demand; a forecaster can only infer it by reading the description.
 """
 
 from __future__ import annotations
@@ -103,37 +109,77 @@ SPECIAL_LOTS = {
     "SKU-006": [("LOT-006-A", 150, 15), ("LOT-006-B", 70, 100)],
 }
 # "Actual" outcome truth used only by the evaluation world (never shown to the planner).
-TRUTH_PO_DELAYS = {"PO-2041": 9, "PO-2042": 9}
-INFLUENCER = ("SKU-019", date(2026, 10, 15), date(2026, 10, 24), 2.8)
+TRUTH_PO_DELAYS = {"PO-2041": 9, "PO-2042": 9, "PO-2044": 6}
+# Inbox-only events (known only from messages in data/messages): sku, start, end, demand multiplier.
+INBOX_DEMAND_EVENTS = [
+    ("SKU-019", date(2026, 10, 15), date(2026, 10, 24), 2.8),  # creator campaign
+    ("SKU-014", date(2026, 10, 14), date(2026, 10, 23), 0.7),  # Amazon listing suppressed
+]
+
+# Text-only feed events: feed scope/window + description; truth = (effect start, effect end, {sku: effect}).
+# Effects are SKU-specific within the tagged scope (e.g. a whey-bar recall helps bars, barely cookies, not tubs).
+TEXT_ONLY_TRUTH = {
+    "TXT-makhana-reels": (date(2026, 9, 1), date(2026, 9, 30), {"SKU-007": 0.25}),
+    "TXT-blinkit-banner": (date(2026, 9, 8), date(2026, 9, 14), {"SKU-015": 0.50}),
+    "TXT-whey-sale": (date(2026, 9, 20), date(2026, 10, 5), {"SKU-001": -0.15, "SKU-002": -0.15, "SKU-003": -0.05}),
+    "TXT-fitbar-recall": (date(2026, 10, 1), date(2026, 10, 28), {"SKU-004": 0.35, "SKU-005": 0.35, "SKU-006": 0.10}),
+    "TXT-heatwave": (date(2026, 10, 20), date(2026, 10, 31), {"SKU-013": 0.25, "SKU-014": 0.20, "SKU-015": 0.30,
+                                                               "SKU-016": 0.30, "SKU-017": -0.08}),
+    "TXT-instamart-banner": (date(2026, 10, 15), date(2026, 10, 21), {"SKU-018": 0.60}),
+}
 
 
 def context_events() -> list[dict]:
+    """Feed rows plus the generator-only `truth_key` (stripped before writing the CSV)."""
     d = date
     rows = [
-        # history
-        ("weather", d(2026, 6, 15), d(2026, 6, 30), None, "Beverages", 0.30, "Heatwave across north India; RTD beverage demand up"),
-        ("weather", d(2026, 7, 1), d(2026, 9, 15), None, "Beverages", -0.10, "Monsoon season; cold beverages soften"),
-        ("promotion", d(2026, 8, 13), d(2026, 8, 17), None, "Protein", 0.25, "Independence Day sale: 15% off protein"),
-        ("holiday", d(2026, 8, 15), d(2026, 8, 15), None, None, 0.0, "Independence Day"),
-        ("holiday", d(2026, 9, 12), d(2026, 9, 16), None, "Snacks", 0.25, "Ganesh Chaturthi festive snacking"),
-        ("social", d(2026, 9, 1), d(2026, 9, 30), "SKU-007", None, 0.20, "#makhana trending on Instagram reels"),
-        ("competitor", d(2026, 9, 20), d(2026, 10, 5), "SKU-001", None, -0.15, "Rival whey brand 20% off on Amazon"),
-        ("competitor", d(2026, 9, 20), d(2026, 10, 5), "SKU-002", None, -0.15, "Rival whey brand 20% off on Amazon"),
-        ("promotion", d(2026, 9, 25), d(2026, 9, 30), None, "Supplements", 0.20, "Wellness week bundle offer"),
-        # horizon (known in advance)
-        ("weather", d(2026, 10, 13), d(2026, 10, 31), None, "Beverages", 0.10, "Post-monsoon heat forecast (IMD)"),
-        ("holiday", d(2026, 10, 18), d(2026, 10, 21), None, "Snacks", 0.20, "Dussehra / Navratri festive demand"),
-        ("promotion", d(2026, 11, 1), d(2026, 11, 9), None, "Snacks", 0.35, "Diwali gift-box promotion: snacks 15% off"),
-        ("holiday", d(2026, 11, 8), d(2026, 11, 8), None, None, 0.0, "Diwali"),
-        ("competitor", d(2026, 10, 10), d(2026, 10, 25), "SKU-001", None, -0.10, "Rival whey festive discount 15%"),
+        # history, numeric prior
+        ("weather", d(2026, 6, 15), d(2026, 6, 30), None, "Beverages", 0.30, "Heatwave across north India; RTD beverage demand up", None),
+        ("weather", d(2026, 7, 1), d(2026, 9, 15), None, "Beverages", -0.10, "Monsoon season; cold beverages soften", None),
+        ("promotion", d(2026, 8, 13), d(2026, 8, 17), None, "Protein", 0.25, "Independence Day sale: 15% off protein", None),
+        ("holiday", d(2026, 8, 15), d(2026, 8, 15), None, None, 0.0, "Independence Day", None),
+        ("holiday", d(2026, 9, 12), d(2026, 9, 16), None, "Snacks", 0.25, "Ganesh Chaturthi festive snacking", None),
+        ("promotion", d(2026, 9, 25), d(2026, 9, 30), None, "Supplements", 0.20, "Wellness week bundle offer", None),
+        # history, text only
+        ("social", d(2026, 9, 1), d(2026, 9, 30), "SKU-007", None, None,
+         "'Makhana chaat' reels trend on Instagram all through September; several fitness creators tag our Peri Peri "
+         "makhana in unpaid posts", "TXT-makhana-reels"),
+        ("promotion", d(2026, 9, 8), d(2026, 9, 14), "SKU-015", None, None,
+         "Blinkit runs a homepage banner for our Electrolyte Drink Orange 500ml from Sep 8 to Sep 14",
+         "TXT-blinkit-banner"),
+        ("competitor", d(2026, 9, 20), d(2026, 10, 5), None, "Protein", None,
+         "MuscleKart 'Whey Wednesday' sale: 20% off its 1kg whey protein tubs on Amazon, Sep 20 - Oct 5",
+         "TXT-whey-sale"),
+        ("competitor", d(2026, 10, 1), d(2026, 10, 28), None, "Protein", None,
+         "Competitor FitBar recalls its whey protein bars nationwide from Oct 1 after an FSSAI allergen alert; "
+         "FitBar expects shelves to stay empty for about four weeks", "TXT-fitbar-recall"),
+        # horizon, numeric prior
+        ("holiday", d(2026, 10, 18), d(2026, 10, 21), None, "Snacks", 0.20, "Dussehra / Navratri festive demand", None),
+        ("promotion", d(2026, 11, 1), d(2026, 11, 9), None, "Snacks", 0.35, "Diwali gift-box promotion: snacks 15% off", None),
+        ("holiday", d(2026, 11, 8), d(2026, 11, 8), None, None, 0.0, "Diwali", None),
+        ("competitor", d(2026, 10, 10), d(2026, 10, 25), "SKU-001", None, -0.10, "Rival whey festive discount 15%", None),
+        # horizon, text only
+        ("weather", d(2026, 10, 13), d(2026, 11, 2), None, "Beverages", None,
+         "IMD heatwave alert: Mumbai, Pune and Bengaluru expected at 36-38 C from Oct 20, spell likely to last till "
+         "month-end", "TXT-heatwave"),
+        ("promotion", d(2026, 10, 15), d(2026, 10, 21), "SKU-018", None, None,
+         "Swiggy Instamart features our Oat Milk Barista 1L in a homepage banner, Oct 15-21", "TXT-instamart-banner"),
     ]
     return [{"kind": k, "start_date": s.isoformat(), "end_date": e.isoformat(), "sku_id": sku or "",
-             "category": cat or "", "value": v, "description": desc} for k, s, e, sku, cat, v, desc in rows]
+             "category": cat or "", "value": "" if v is None else v, "description": desc, "truth_key": key}
+            for k, s, e, sku, cat, v, desc, key in rows]
 
 
 def effect(ctx: list[dict], sku: str, cat: str, day: date) -> float:
+    """True demand multiplier from the context feed. Text-only events use TEXT_ONLY_TRUTH, never the feed value."""
     m = 1.0
     for c in ctx:
+        if c["truth_key"]:
+            start, end, by_sku = TEXT_ONLY_TRUTH[c["truth_key"]]
+            if start <= day <= end and (not c["sku_id"] or c["sku_id"] == sku) \
+                    and (not c["category"] or c["category"] == cat):
+                m *= 1.0 + by_sku.get(sku, 0.0)
+            continue
         if c["value"] == 0 or not (date.fromisoformat(c["start_date"]) <= day <= date.fromisoformat(c["end_date"])):
             continue
         if (c["sku_id"] and c["sku_id"] != sku) or (c["category"] and c["category"] != cat):
@@ -168,7 +214,7 @@ def generate(out: Path = SEED_DIR) -> None:
     write("products.csv", [{"sku_id": p[0], "name": p[1], "category": p[2], "supplier_id": p[3], "unit_cost": p[4],
                             "unit_price": p[5], "case_pack": p[6], "moq": p[7], "shelf_life_days": p[8],
                             "image_key": f"products/{p[0].lower()}.png"} for p in PRODUCTS])
-    write("context_events.csv", ctx)
+    write("context_events.csv", [{k: v for k, v in c.items() if k != "truth_key"} for c in ctx])
 
     sales = []
     for i in range(HISTORY_DAYS):
@@ -194,8 +240,9 @@ def generate(out: Path = SEED_DIR) -> None:
         day = AS_OF + timedelta(days=i)
         for p in PRODUCTS:
             x = lam(p, ctx, day)
-            if p[0] == INFLUENCER[0] and INFLUENCER[1] <= day <= INFLUENCER[2]:
-                x *= INFLUENCER[3]
+            for sku, start, end, mult in INBOX_DEMAND_EVENTS:
+                if p[0] == sku and start <= day <= end:
+                    x *= mult
             ev.append({"sku_id": p[0], "demand_date": day.isoformat(),
                        "units": int(rng.poisson(x * rng.lognormal(0, 0.12)))})
     write("evaluation_demand.csv", ev)
@@ -249,6 +296,12 @@ def generate(out: Path = SEED_DIR) -> None:
     write("receipts.csv", receipts)
     (out / "evaluation_truth.json").write_text(json.dumps({"po_extra_delay_days": TRUTH_PO_DELAYS,
                                                            "as_of": AS_OF.isoformat()}, indent=2), encoding="utf-8")
+    # Audit trail only (never loaded into the DB): the true effects behind text-only feed events.
+    (out / "context_truth.json").write_text(json.dumps(
+        {"text_only_events": {k: {"start": s.isoformat(), "end": e.isoformat(), "effect_by_sku": m}
+                              for k, (s, e, m) in TEXT_ONLY_TRUTH.items()},
+         "inbox_demand_events": [{"sku_id": k, "start": s.isoformat(), "end": e.isoformat(), "multiplier": m}
+                                 for k, s, e, m in INBOX_DEMAND_EVENTS]}, indent=2), encoding="utf-8")
 
 
 def _read(name: str, d: Path) -> list[dict]:
@@ -293,7 +346,7 @@ def load(src: Path = SEED_DIR) -> dict:
                        "received_qty": int(r["received_qty"])} for r in _read("receipts.csv", src)])
         ins(ContextEvent, [{"kind": r["kind"], "start_date": D(r["start_date"]), "end_date": D(r["end_date"]),
                             "sku_id": r["sku_id"] or None, "category": r["category"] or None,
-                            "value": float(r["value"]), "description": r["description"]}
+                            "value": float(r["value"]) if r["value"] != "" else None, "description": r["description"]}
                            for r in _read("context_events.csv", src)])
         ins(EvaluationDemand, [{"sku_id": r["sku_id"], "demand_date": D(r["demand_date"]), "units": float(r["units"])}
                                for r in _read("evaluation_demand.csv", src)])

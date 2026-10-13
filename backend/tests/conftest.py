@@ -13,6 +13,7 @@ os.environ["VAR_DIR"] = str(_TMP / "var")
 os.environ["LLM_DISABLED"] = "true"
 os.environ["EVAL_WORLDS"] = "8"
 os.environ["ROLLING_WORLDS"] = "2"
+os.environ["OPTION_WORLDS"] = "1"
 
 BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:

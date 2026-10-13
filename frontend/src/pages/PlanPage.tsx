@@ -1,14 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api, inr, num, pct } from '../api';
-import type { Dist, OverrideItem, Overview, Plan, PlanAction, PlanDiff, Robustness } from '../api';
+import type { Dist, OverrideItem, Overview, Plan, PlanAction, PlanDiff, Robustness, Strategy } from '../api';
 import { AlertList, Badge, Card, ErrorBox, Kpi, MethodBadge, PriorityBadge, RecordChip, Spinner } from '../ui';
 
 const KIND: Record<string, [string, string]> = {
   standard_po: ['ok', 'buy'],
   expedited_po: ['bad', 'expedite'],
+  staggered_po: ['ok', 'staggered buy'],
   markdown: ['warn', 'markdown'],
   defer: ['neutral', 'defer'],
+};
+
+const STRATEGY_LABEL: Record<Strategy, string> = {
+  commit_now: 'Commit now',
+  staggered: 'Staggered buys',
+  reserve: 'Keep a reserve',
+  lean: 'Lean budget',
 };
 
 const POLICY_LABEL: Record<string, string> = {
@@ -107,11 +115,20 @@ function ActionRow({
           ) : (
             <>
               {a.label}
+              {!!a.later_qty && (
+                <div className="small">
+                  {a.order_qty} now (arrives ~{a.arrival_date}) · <strong>+{a.later_qty}</strong> ordered{' '}
+                  {a.later_order_date} (arrives ~{a.later_arrival_date}), re-checked at that review
+                </div>
+              )}
               {a.overridden && <div className="muted small">was: {a.original}</div>}
             </>
           )}
         </td>
-        <td className="num">{inr(a.cash_outlay)}</td>
+        <td className="num">
+          {inr(a.cash_outlay)}
+          {!!a.later_qty && <div className="range">{inr(a.cash_today)} today</div>}
+        </td>
         <td className="num">{inr(a.expected_loss_if_deferred)}</td>
         <td className="num">{inr(a.expected_loss_with_action)}</td>
         <td className="num strong">{inr(a.loss_avoided)}</td>
@@ -365,10 +382,118 @@ function RobustnessCard({ r, onRetry }: { r: Robustness | undefined; onRetry: ()
   );
 }
 
+function OptionsCard({ plan, onUse, busy }: { plan: Plan; onUse: (k: Strategy) => void; busy: boolean }) {
+  const opts = plan.summary.options;
+  if (!opts?.length) return null;
+  const rob = plan.summary.robustness;
+  const ev = rob?.status === 'done' ? rob.options : undefined;
+  const best = ev?.best_service ?? {};
+  const tag = (k: Strategy) =>
+    (['actual', 'calm', 'shock'] as const)
+      .filter((g) => best[g] === k)
+      .map((g) => (
+        <Badge key={g} kind="ok" title={`Lowest loss incl. service penalty in ${g === 'actual' ? 'the actual world' : `${g} worlds`}`}>
+          best {g === 'actual' ? 'actual' : g === 'calm' ? 'calm' : 'under shocks'}
+        </Badge>
+      ));
+  return (
+    <Card title="Plan options: when to spend the budget">
+      <p className="muted small">
+        Same budget, same forecasts, four ways to use it. <em>Day-0 loss</em> assumes nothing else is bought this month;
+        the <em>with weekly reviews</em> columns re-plan the remaining cash on days 7, 14 and 21 (scheduled tranches go
+        back to that review, which can re-order, resize or redirect them) and are paired: every option sees the same
+        futures.
+      </p>
+      <table className="table compact">
+        <thead>
+          <tr>
+            <th>Option</th>
+            <th className="num">Paid today</th>
+            <th className="num">Scheduled</th>
+            <th className="num">Held back</th>
+            <th className="num">Day-0 loss (actual)</th>
+            <th className="num">Weekly reviews: actual</th>
+            <th className="num">Calm futures{ev ? ` (${ev.n_calm})` : ''}</th>
+            <th className="num">Shock futures{ev ? ` (${ev.n_shock})` : ''}</th>
+            <th className="num">Fill / hero</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {opts.map((o) => {
+            const e = ev?.options[o.key];
+            const vs = e?.vs_commit_now;
+            return (
+              <tr key={o.key} className={o.is_current ? 'overridden' : ''}>
+                <td>
+                  <strong>{o.label}</strong> {o.is_current && <Badge kind="neutral">current</Badge>} {tag(o.key)}
+                  <div className="muted small">{o.description}</div>
+                  {o.n_staggered > 0 && <div className="small">{o.n_staggered} buys split into two tranches</div>}
+                  {o.key === 'lean' && <div className="small">operates on {inr(o.operating_budget)}</div>}
+                </td>
+                <td className="num strong">{inr(o.cash_today)}</td>
+                <td className="num">{o.cash_scheduled ? inr(o.cash_scheduled) : '–'}</td>
+                <td className="num">{inr(o.cash_uncommitted)}</td>
+                <td className="num">
+                  {inr(o.eval_loss_no_review)}
+                  <div className="range">plan view {inr(o.planning_loss)}</div>
+                </td>
+                <td className="num">{e ? inr(e.actual.total_loss) : <Spinner />}</td>
+                <td className="num">
+                  {e?.calm ? (
+                    <>
+                      {inr(e.calm.total_loss.mean)}
+                      {vs?.calm && (
+                        <div className="range">
+                          {inr(Math.abs(vs.calm.mean))} {vs.calm.mean >= 0 ? 'better' : 'worse'} than commit now · lower loss in{' '}
+                          {pct(vs.calm.win_rate)}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    '–'
+                  )}
+                </td>
+                <td className="num">
+                  {e?.shock ? (
+                    <>
+                      {inr(e.shock.total_loss.mean)}
+                      {vs?.shock && (
+                        <div className="range">
+                          {inr(Math.abs(vs.shock.mean))} {vs.shock.mean >= 0 ? 'better' : 'worse'} than commit now · lower loss in{' '}
+                          {pct(vs.shock.win_rate)}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    '–'
+                  )}
+                </td>
+                <td className="num">
+                  {e ? `${pct(e.actual.fill_rate, 1)} / ${pct(e.actual.hero_fill_rate, 1)}` : `${pct(o.eval_fill_rate, 1)} / ${pct(o.eval_hero_fill_rate, 1)}`}
+                </td>
+                <td>
+                  {!o.is_current && plan.status !== 'approved' && (
+                    <button className="ghost" disabled={busy} onClick={() => onUse(o.key)}>
+                      Use this option
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {ev && <p className="muted small">{ev.notes}</p>}
+    </Card>
+  );
+}
+
 export default function PlanPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [budget, setBudget] = useState<string>('');
+  const [strategy, setStrategy] = useState<Strategy>('commit_now');
   const [busy, setBusy] = useState<'' | 'plan' | 'approve' | 'override'>('');
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -381,6 +506,7 @@ export default function PlanPage() {
       setOverview(o);
       setPlan(p);
       setBudget((b) => b || String(p?.budget ?? o.default_budget));
+      if (p?.summary.strategy) setStrategy(p.summary.strategy);
     } catch (e) {
       setError(String((e as Error).message));
     } finally {
@@ -407,19 +533,21 @@ export default function PlanPage() {
     return () => clearTimeout(t);
   }, [rstatus, planId, plan]);
 
-  const generate = async (b0?: number) => {
+  const generate = async (b0?: number, strat?: Strategy) => {
     const b = b0 ?? Number(budget);
+    const st = strat ?? strategy;
     if (!Number.isFinite(b) || b <= 0) {
       setError('Budget must be a positive number.');
       return;
     }
     if (b0 !== undefined) setBudget(String(b0));
+    if (strat !== undefined) setStrategy(strat);
     setBusy('plan');
     setError(null);
     setEditing(false);
     setEdits({});
     try {
-      setPlan(await api.createPlan(b));
+      setPlan(await api.createPlan(b, st));
       setOverview(await api.overview());
     } catch (e) {
       setError(String((e as Error).message));
@@ -510,6 +638,16 @@ export default function PlanPage() {
               className="w-num"
             />
           </label>
+          <label>
+            Option{' '}
+            <select value={strategy} onChange={(e) => setStrategy(e.target.value as Strategy)}>
+              {(Object.keys(STRATEGY_LABEL) as Strategy[]).map((k) => (
+                <option key={k} value={k}>
+                  {STRATEGY_LABEL[k]}
+                </option>
+              ))}
+            </select>
+          </label>
           <button className="primary" onClick={() => generate()} disabled={!!busy}>
             {busy === 'plan' ? <Spinner label="Planning…" /> : plan ? 'Re-plan' : 'Generate plan'}
           </button>
@@ -550,9 +688,20 @@ export default function PlanPage() {
         <>
           <div className="kpis">
             <Kpi
-              label="Cash used"
+              label="Cash committed"
               value={inr(s.cash_used)}
-              sub={`of ${inr(s.budget)} budget · ${inr(s.cash_remaining)} left`}
+              sub={
+                <>
+                  of {inr(s.budget)} budget · {inr(s.cash_remaining)} left
+                  {!!s.cash_scheduled && (
+                    <>
+                      {' '}
+                      · {inr(s.cash_today)} today, {inr(s.cash_scheduled)} scheduled
+                    </>
+                  )}
+                  {s.strategy_label && <> · option: {s.strategy_label}</>}
+                </>
+              }
             />
             <Kpi
               label="Expected 30-day loss"
@@ -706,6 +855,8 @@ export default function PlanPage() {
                 : 'Click a row for reasons and the records behind it. Loss = lost margin + expiry write-off + markdown cost + cannibalised margin + expedite premium, averaged over demand paths and supplier-delay cases.'}
             </p>
           </Card>
+
+          <OptionsCard plan={plan} busy={!!busy} onUse={(k) => generate(plan.budget, k)} />
 
           <RobustnessCard r={s.robustness} onRetry={retryEval} />
 

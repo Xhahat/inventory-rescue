@@ -12,68 +12,105 @@ The AI Builder Cup presentation is in
 
 | Area | Details |
 |---|---|
-| Signal inbox | Paste or upload a supplier email or campaign note. The LLM extracts typed events (`supplier_delay`, `demand_spike`, `demand_drop`, `expiry_risk`), each with a verbatim quote as evidence. Every event is validated and must be confirmed by a human before it affects a plan. |
-| Forecasts (hybrid) | A statistical base is always computed: Holt-Winters (damped trend, weekly seasonality) or Croston/SBA for intermittent SKUs. p10/p90 come from rolling in-sample errors. Known calendar/context events and confirmed signals are applied as multipliers. The LLM may only **retune those event multipliers within bounds** (plus at most two small extra adjustments); it never writes the series. Invalid output means a labelled statistical forecast. |
+| Signal inbox | Paste or upload a supplier email or campaign note. The LLM extracts typed events (`supplier_delay`, `demand_spike`, `demand_drop`, `expiry_risk`), each with a verbatim quote as evidence. Every event is validated and must be confirmed by a human before it affects a plan. An **extraction-quality card** scores the same extraction path on a 40-message labelled set. |
+| Forecasts (hybrid) | A statistical base is always computed: Holt-Winters (damped trend, weekly seasonality) or Croston/SBA for intermittent SKUs. p10/p90 come from rolling in-sample errors. Known calendar/context events and confirmed signals are applied as multipliers. About a third of the context feed is **text only** (a competitor recall, a heatwave, a homepage banner, an influencer reel): the statistical forecast treats those as ×1.0, and only the LLM can turn the description into a bounded multiplier. The LLM may only **retune event multipliers within bounds** (plus at most two small extra adjustments, each with a stated driver); it never writes the series. Invalid output means a labelled statistical forecast. |
 | Service level | SKUs in the top 20% by 28-day revenue are **hero** SKUs; each unit short costs a goodwill penalty (15% of price for heroes, 5% for others) in the optimiser. The operator can pin any SKU to hero / standard / auto. Plans report fill rate and hero fill rate. |
 | Supply uncertainty | Each supplier's historical delays give early / typical / late cases (P15/P50/P85, weighted 30/40/30), with the same delay applied to every PO from that supplier. Confirmed delay signals are a floor. |
 | Markdowns | Concave price-elasticity uplift (diminishing returns at deep discounts), shelf-life aware, and **cannibalisation**: 30% of the extra units are assumed to come from the category's other SKUs at their average margin. |
 | Planner | A stochastic simulator scores candidate actions (standard or expedited PO, partial buys, markdowns, combined, defer) per SKU. An exact multiple-choice knapsack then picks the best set under the cash budget. |
+| Plan options | The same budget is planned four ways: **commit now** (spend on day 0), **staggered buys** (larger buys split into a now tranche and a day-7/14 tranche that goes back to that weekly review), **keep a reserve** (30% held for the reviews) and **lean** (smallest budget keeping 90% of the savings). Each shows cash paid today, scheduled and held back, plus paired results with weekly re-planning in calm and shocked futures. One click re-plans with any option; the PO export marks scheduled lines. |
 | Budget frontier | The same candidate menu is solved at 0, ¼, ½, ¾, 1, 1.5 and 2 × the budget, showing expected loss and fill rate per budget level. Any point can be re-planned in one click. |
 | Baselines | A **static** reorder-point rule (stated lead time, 28-day average) and a **tuned** rule whose safety and cover days are grid-searched on the planning world. The plan has to beat both. |
 | Robustness | A background job scores the plan, both baselines and (when signals exist) the plan without signals over 120 Monte Carlo demand/supply worlds. It reports p5/p50/p95 savings and win rates. It also simulates **weekly re-planning** (days 0/7/14/21) against plan-once, using rolling lots, POs, budget and markdowns. |
 | Overrides and plan diff | The operator can change quantities or discounts, or skip any line, on a draft plan. Edited plans are re-scored with the same simulator and stay within budget; the robustness job re-runs. Each new plan lists what changed vs the previous one and why. |
 | Explanation | The LLM writes a plan narrative that may only use numbers, dates and IDs present in the plan JSON. It gets one corrective retry; after that, a deterministic template is used. |
+| Planning assistant | `#/assistant`: ask questions in plain language ("Why are we not expediting SKU-015?", "What if SUP-04 slips a week?"). The model answers by calling ten read-only tools over the planner and simulator, and every number in its answer is checked against those tool results. |
 | Scenarios | A free-text "what if" (for example "SUP-04 delays 7 more days" or "budget is cut to 30k") is parsed into a validated spec. The response shows the current plan next to an adapted plan. |
-| Backtest | Rolling-origin forecast backtest: three origins, a 14-day horizon and the top 10 SKUs. It reports pooled WAPE and p10–p90 coverage for seasonal naive, naive + events, statistical and hybrid. |
+| Backtest | Rolling-origin forecast backtest: three origins, a 14-day horizon, the top 10 SKUs plus every SKU with a context event in a hold-out window (25 SKUs). It reports pooled WAPE and p10–p90 coverage for seasonal naive, naive + events, statistical and hybrid, overall and on the text-only series. |
 | Approve & export | Approve a plan, then download PO, markdown and action CSVs. Analytics tables can also be exported. |
 
 Every LLM call is logged (`/api/llm/calls`) with a status of `ok`, `ok_repaired`, `invalid`, `error` or `unavailable`. The UI shows a badge for whether each output came from a **validated model** or a **labelled fallback**.
 
 ## Results on the synthetic dataset (₹50,000 budget)
 
-All values are simulated, not measured business results. They come from a fresh seed (`scripts.seed --no-generate`, all 30 forecasts hybrid) and a plan generated in the UI.
+All values are simulated, not measured business results. They come from a fresh seed (`scripts.seed`, all 30 forecasts hybrid, live model `gpt-5.4-mini`) and a plan generated in the UI.
 
 | Measure | Plan | Tuned rule | Static rule |
 |---|---|---|---|
-| Expected 30-day loss, evaluation world | ₹117.4k | ₹126.8k | ₹140.3k |
-| Mean loss over 120 Monte Carlo worlds | ₹124.7k | ₹134.4k | ₹146.4k |
-| Savings vs this baseline (mean, p5–p95) | – | ₹9.7k (₹4.0k–₹17.1k), wins in 100% of worlds | ₹21.6k (₹13.7k–₹29.1k), wins in 100% of worlds |
-| Fill rate / hero fill rate | 0.910 / 0.816 | 0.899 / 0.817 | 0.897 / 0.817 |
+| Expected 30-day loss, evaluation world | ₹126.5k | ₹135.2k | ₹147.9k |
+| Mean loss over 120 Monte Carlo worlds | ₹135.0k | ₹144.1k | ₹154.5k |
+| Savings vs this baseline (mean, p5–p95) | – | ₹9.2k (₹4.4k–₹16.7k), wins in 100% of worlds | ₹19.6k (₹13.1k–₹26.1k), wins in 100% of worlds |
+| Fill rate / hero fill rate | 0.913 / 0.766 | 0.896 / 0.792 | 0.897 / 0.792 |
 
 Budget frontier (evaluation world):
 
 | Budget | ₹0 | ₹12.5k | ₹25k | ₹37.5k | ₹50k | ₹75k | ₹100k |
 |---|---|---|---|---|---|---|---|
-| Loss | ₹177.5k | ₹162.2k | ₹144.0k | ₹129.9k | ₹117.4k | ₹96.7k | ₹76.9k |
-| Fill rate | 0.835 | 0.847 | 0.867 | 0.899 | 0.910 | 0.937 | 0.954 |
+| Loss | ₹186.5k | ₹170.8k | ₹153.5k | ₹141.0k | ₹126.5k | ₹103.1k | ₹83.2k |
+| Fill rate | 0.831 | 0.840 | 0.888 | 0.889 | 0.913 | 0.937 | 0.962 |
 
-Forecast backtest (origins 1, 15 and 29 Sep; 14-day horizon; top 10 SKUs):
+### Plan options: when to spend the budget
+
+Spending everything on day 0 leaves nothing for the weekly reviews: with commit-now, weekly re-planning gains ₹0 over plan-once. The plan-options card compares four uses of the same ₹50k. Each option is followed by weekly re-planning (days 0/7/14/21). "Calm" futures are 10 Monte Carlo worlds; "shock" futures add mid-month demand shifts (×0.5–1.8) on about 30% of SKUs and a 4–8 day slip at one supplier. Comparisons are paired: every option sees the same futures.
+
+| Option | Paid on day 0 | Loss, actual world | Calm: vs commit now (win rate) | Shocks: vs commit now (win rate) | Hero fill, actual |
+|---|---|---|---|---|---|
+| Commit now | ₹50.0k | ₹126.5k | – | – | 0.766 |
+| Staggered buys (4 split) | ₹27.1k | ₹122.9k | ₹1.3k better (80%) | ₹0.4k better (70%) | 0.792 |
+| Keep a reserve (30%) | ₹35.0k | ₹122.2k | ₹4.1k better (100%) | ₹3.2k better (90%) | 0.766 |
+| Lean (₹45k) | ₹44.9k | ₹132.3k | ₹5.8k worse (0%) | ₹5.1k worse (0%) | 0.766 |
+
+Caveats:
+- **Most of the reserve's gain comes from one forecast miss.** The hero SKU-019 is under-forecast, and the day-7 review buys more once its sales show up. The calm futures are centred on the actual month, so they share that miss; the shock futures are the fairer test, and there the reserve loses in 1 of 10.
+- **Staggered buys halve day-0 cash at the same planning loss** and get the best hero fill rate, but their gain is small and uneven (p5 is ₹5–11k worse). Working-capital cost (18% a year) is reported separately and is not in the loss.
+- Without weekly reviews, holding cash back is never better: the day-0 loss with no later buys is ₹141.7k for the reserve against ₹126.5k for commit now.
+
+### Measuring the GenAI layer
+
+Forecast backtest (3 origins × 14 days, 25 SKUs, 1,050 points):
 
 | Model | WAPE | p10–p90 coverage |
 |---|---|---|
-| Seasonal naive | 26.4% | 66% |
-| Naive + events | 25.6% | 67% |
-| Statistical | 24.2% | 80% |
-| Hybrid (latest origin only, 10/10 valid) | 23.5% | 81% |
+| Seasonal naive | 32.0% | 69% |
+| Naive + numeric events | 31.5% | 70% |
+| Statistical | 29.9% | 77% |
+| Hybrid (LLM-tuned events) | **29.1%** | 78% |
+| Statistical, 16 text-only series | 31.5% | 73% |
+| Hybrid, 16 text-only series | **28.8%** | 76% |
 
-Honest caveats:
-- **The LLM step adds nothing measurable here.** On the same SKUs and origin, the statistical forecast scores 23.4% and the hybrid 23.5%. In the synthetic data the context-feed priors equal the true event effects, so there is nothing for the model to correct. Showing its value needs real data.
-- **Weekly re-planning gains only about ₹130 over plan-once** at ₹50k, because the optimiser spends the whole budget on day 0. Re-planning weekly still beats a weekly-run static rule by about ₹22k.
-- **The plan does not improve hero fill rate** (0.816 vs 0.817): its savings come from total loss and overall fill. Raising the hero goodwill penalty or pinning SKUs as hero shifts that balance.
+Inbox extraction, 40 labelled messages (supplier emails, WhatsApp notes, Hindi/Hinglish, forwarded threads, retractions, vague maybes, unknown products, 14 no-event messages):
+
+| Extractor | Precision | Recall | F1 | False event on no-event messages | Messages fully correct |
+|---|---|---|---|---|---|
+| LLM + validators | 0.97 | 1.00 | **0.98** | 1 in 14 | 97.5% |
+| Keyword baseline | 0.94 | 0.50 | 0.65 | 0 | 57.5% |
+
+Every evidence quote appears verbatim in its message. On the 5 demo messages tied to real events, plans built from the LLM-extracted signals recover 100% of the loss reduction that perfect information gives (₹126.5k → ₹118.4k in the evaluation world; ₹135.2k → ₹128.1k over 40 worlds).
+
+Caveats:
+- **The forecasting gain is modest:** 0.8 pp pooled, 2.7 pp on text-only series. The hybrid is better at every origin but worse on some SKUs (for example SKU-003, 41.2% → 47.0%). The LLM consistently underestimates text-only effects (×1.08–1.18 against true +25–60%) and got the heatwave's effect on tea wrong.
+- **The extraction gold set is small and written by the developers**, and the prompt rules were refined after a first run on the same set (F1 0.94 before, 0.98 after). Treat it as a regression check, not a benchmark.
+- **The plan does not improve hero fill rate** (0.766 against 0.792 for the rules); its savings come from total loss and overall fill. Raising the hero goodwill penalty or pinning SKUs as hero shifts that balance.
 - The rolling simulation feeds back realised demand, not censored sales.
+
+### Planning assistant
+
+On seven live questions (gpt-5.4-mini), including a follow-up, every answer passed the number check on the first attempt in 3–8 s. Each used 1–4 tool calls: explaining a SKU decision, a 40k hero-first replan, a supplier slip, expiry markdowns, 50k vs 75k, and a supplier email draft.
 
 ## Architecture
 
 ```
-frontend/  React + TypeScript + Vite + Recharts (hash routes: #/plan #/inbox #/sku #/scenario)
+frontend/  React + TypeScript + Vite + Recharts (hash routes: #/plan #/inbox #/sku #/scenario #/assistant)
 backend/   FastAPI + SQLAlchemy 2 + PostgreSQL 16
   app/api/routes.py        HTTP API (also serves the built frontend when STATIC_DIR exists)
-  app/llm/                 Gemini on Vertex AI / OpenAI-compatible clients, prompts, JSON-task runner with validation
-  app/services/            signals, forecasting, simulator, planner, value, rolling re-plan, scenarios, plans/jobs
+  app/api/assistant_routes.py, eval_routes.py   planning assistant and extraction-evaluation endpoints
+  app/llm/                 Gemini on Vertex AI / OpenAI-compatible clients, prompts, JSON-task runner with validation, tool-calling agent
+  app/services/            signals, forecasting, simulator, planner, value, rolling re-plan and plan options, scenarios, plans/jobs, assistant tools, extraction eval
   app/adapters/            storage (local folder or Cloud Storage), search, analytics
   scripts/seed.py          synthetic data generator and loader
 data/seed/                 generated CSVs and evaluation truth (committed so the demo is reproducible)
-data/messages/             three demo messages
+data/messages/             five demo messages
+data/eval/                 labelled inbox messages for the extraction evaluation
 Dockerfile                 multi-stage: builds the frontend, then one FastAPI image for Cloud Run
 cloudbuild.yaml            CI: build, push to Artifact Registry, roll out to Cloud Run
 infra/gcp/deploy.sh        one-shot Google Cloud setup and deploy
@@ -128,6 +165,8 @@ Settings are read from environment variables, or from `.env` / `env/.env` at the
 | `STORAGE_BACKEND` | `local` | `gcs` stores files in `GCS_BUCKET` (optional `GCS_PREFIX`). |
 | `STATIC_DIR` | `frontend/dist` | Built UI served by FastAPI when present. |
 | `EVAL_WORLDS` / `ROLLING_WORLDS` | `120` / `20` | Monte Carlo worlds for the robustness job. |
+| `OPTION_WORLDS` | `10` | Calm worlds for the plan-options comparison (the same number of shock worlds is added). |
+| `WORKING_CAPITAL_RATE` / `RESERVE_SHARE` / `LEAN_SAVINGS_SHARE` | `0.18` / `0.3` / `0.9` | Plan-option settings: annual cost of cash, share held back by "keep a reserve", share of savings "lean" must keep. |
 
 Without LLM credentials the app still works end to end, using statistical and template fallbacks that are clearly labelled.
 
@@ -159,6 +198,9 @@ Coverage includes:
 - the LLM output validators: schema, verbatim evidence, unknown SKUs or IDs, invented numbers, and forecasts that ignore confirmed events;
 - fallbacks and the repair retry;
 - planner budget feasibility and value against the baseline;
+- staggered buys, the four plan options, shock worlds and the paired option comparison;
+- the planning assistant's tools, number checker and agent loop (with a faked model);
+- extraction-evaluation matching and scoring;
 - the scenario parser and spec bounds;
 - the full API flow.
 
@@ -190,13 +232,15 @@ Local container check: `docker build -t inventory-rescue . && docker run -p 8080
    - the action table with reasons;
    - the budget frontier.
    
-   The robustness card fills in after about 20 seconds with Monte Carlo savings ranges, win rates and the weekly re-plan comparison.
-2. **Inbox**: open `#/inbox`. Click each demo-message button (supplier delay for SUP-04, an influencer spike on SKU-019, an expiring cold-brew lot), then click **Extract signals**. Check each event's quoted evidence, then **Confirm** the delay and the spike.
-3. **Re-plan**: back on `#/plan`, click **Re-plan**. The "what changed" card lists the lines that moved and why: extra SKU-019 for the spike, and a workaround for the delayed POs. With signals confirmed, the robustness card also shows the plan-without-signals ablation.
-4. **Override**: click **Edit plan**, change a quantity or discount or skip a line, and apply. The plan is re-scored and stays within budget.
-5. **Approve**: click **Approve & export CSVs** and download the PO and markdown files.
-6. **SKU drill-down**: on `#/sku/SKU-019`, see the forecast band, the supplier-delay cases and the hero/standard priority toggle.
-7. **Scenarios**: on `#/scenario`, try "SUP-04 delays another 7 days" or "budget is cut to 30k", then click **Run backtest**.
+   The robustness card fills in after about 45 seconds with Monte Carlo savings ranges, win rates, the weekly re-plan comparison and the plan-options results.
+2. **Plan options**: in the "Plan options" card, compare cash paid today against loss in calm and shocked futures, then click **Use this option** on *Staggered buys* to see split buys ("48 now … · +60 ordered 2026-10-27").
+3. **Inbox**: open `#/inbox`. Click a demo-message button (supplier delay for SUP-04, an influencer spike on SKU-019, an expiring cold-brew lot, a suppressed listing, a customs hold), then click **Extract signals**. Check each event's quoted evidence, then **Confirm** the delay and the spike. Scroll down to the **Extraction quality** card for precision/recall on the labelled set.
+4. **Re-plan**: back on `#/plan`, click **Re-plan**. The "what changed" card lists the lines that moved and why: extra SKU-019 for the spike, and a workaround for the delayed POs. With signals confirmed, the robustness card also shows the plan-without-signals ablation.
+5. **Override**: click **Edit plan**, change a quantity or discount or skip a line, and apply. The plan is re-scored and stays within budget.
+6. **Approve**: click **Approve & export CSVs** and download the PO and markdown files.
+7. **Assistant**: on `#/assistant`, ask "Why are we not expediting SKU-015?" or "What happens if SUP-04 slips another week?" and open the tool trace under the answer.
+8. **SKU drill-down**: on `#/sku/SKU-019`, see the forecast band, the supplier-delay cases and the hero/standard priority toggle.
+9. **Scenarios**: on `#/scenario`, try "SUP-04 delays another 7 days" or "budget is cut to 30k", then click **Run backtest**.
 
 ## LLM safeguards
 
@@ -204,6 +248,7 @@ Local container check: `docker build -t inventory-rescue . && docker run -p 8080
 - Extracted signals affect plans only after a human confirms them.
 - Optimisation, simulation and money calculations are deterministic code. The LLM never chooses quantities.
 - Explanations may only quote values that appear in the computed plan.
+- The planning assistant can only call read-only tools with validated arguments (known SKU and supplier ids, bounded numbers). Previews and scenarios run in memory, and emails are drafts that are never sent. Every number, date and id in an answer must appear in that conversation's tool results or the question; after one failed correction the reply falls back to a labelled summary of the tool results.
 
 ## Known limitations
 

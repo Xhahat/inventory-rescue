@@ -1,0 +1,68 @@
+{
+  "text_only_events": {
+    "TXT-makhana-reels": {
+      "start": "2026-09-01",
+      "end": "2026-09-30",
+      "effect_by_sku": {
+        "SKU-007": 0.25
+      }
+    },
+    "TXT-blinkit-banner": {
+      "start": "2026-09-08",
+      "end": "2026-09-14",
+      "effect_by_sku": {
+        "SKU-015": 0.5
+      }
+    },
+    "TXT-whey-sale": {
+      "start": "2026-09-20",
+      "end": "2026-10-05",
+      "effect_by_sku": {
+        "SKU-001": -0.15,
+        "SKU-002": -0.15,
+        "SKU-003": -0.05
+      }
+    },
+    "TXT-fitbar-recall": {
+      "start": "2026-10-01",
+      "end": "2026-10-28",
+      "effect_by_sku": {
+        "SKU-004": 0.35,
+        "SKU-005": 0.35,
+        "SKU-006": 0.1
+      }
+    },
+    "TXT-heatwave": {
+      "start": "2026-10-20",
+      "end": "2026-10-31",
+      "effect_by_sku": {
+        "SKU-013": 0.25,
+        "SKU-014": 0.2,
+        "SKU-015": 0.3,
+        "SKU-016": 0.3,
+        "SKU-017": -0.08
+      }
+    },
+    "TXT-instamart-banner": {
+      "start": "2026-10-15",
+      "end": "2026-10-21",
+      "effect_by_sku": {
+        "SKU-018": 0.6
+      }
+    }
+  },
+  "inbox_demand_events": [
+    {
+      "sku_id": "SKU-019",
+      "start": "2026-10-15",
+      "end": "2026-10-24",
+      "multiplier": 2.8
+    },
+    {
+      "sku_id": "SKU-014",
+      "start": "2026-10-14",
+      "end": "2026-10-23",
+      "multiplier": 0.7
+    }
+  ]
+}

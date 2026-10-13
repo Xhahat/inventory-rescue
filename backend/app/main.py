@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .api.assistant_routes import router as assistant_router
+from .api.eval_routes import router as eval_router
 from .api.routes import router
 from .config import get_settings
 from .db import init_db
@@ -27,6 +29,8 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=s.cors_origin_list, allow_methods=["GET", "POST", "PUT"],
                        allow_headers=["Content-Type"], allow_credentials=False)
     app.include_router(router)
+    app.include_router(assistant_router)
+    app.include_router(eval_router)
     static = Path(s.static_dir)
     if (static / "index.html").is_file():
         # Single-service deployment (Cloud Run): the built React app is served from the same origin as /api.

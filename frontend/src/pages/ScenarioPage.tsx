@@ -334,15 +334,17 @@ export default function ScenarioPage() {
         {btJob?.status === 'failed' && <ErrorBox error={btJob.error} />}
         {!bt && (
           <p className="muted">
-            Not run yet. It forecasts 14 days from three past dates for the top 10 SKUs and scores against actual sales.
+            Not run yet. It forecasts 14 days from three past dates for the top 10 SKUs plus every SKU with a context
+            event in the hold-out, and scores against actual sales.
           </p>
         )}
         {bt && !bt.pooled && <p className="muted">Backtest format changed; re-run it.</p>}
         {bt && bt.pooled && (
           <>
             <p>
-              Origins <strong>{bt.origins.join(', ')}</strong> · {bt.holdout_days} days · {bt.skus} SKUs · valid hybrid
-              forecasts (latest origin): <strong>{bt.hybrid_valid_forecasts}</strong>/{bt.skus}
+              Origins <strong>{bt.origins.join(', ')}</strong> · {bt.holdout_days} days · {bt.skus} SKUs
+              {bt.sku_selection ? ` (${bt.sku_selection.text_only_event.length} with a text-only event)` : ''} · valid
+              hybrid forecasts: <strong>{bt.hybrid_valid_forecasts}</strong>/{bt.hybrid_attempted ?? bt.skus}
             </p>
             <table className="table compact">
               <thead>
@@ -377,6 +379,14 @@ export default function ScenarioPage() {
               <p className="small">
                 On the same SKUs and dates, statistical WAPE is {pct(bt.wape_statistical_on_hybrid_skus, 1)} vs hybrid{' '}
                 {pct(bt.pooled.hybrid.wape, 1)}.
+                {bt.text_only_subset && (
+                  <>
+                    {' '}
+                    On the {bt.text_only_subset.n_series} series whose hold-out overlaps a text-only event (the
+                    statistical model treats those as no effect): statistical {pct(bt.text_only_subset.statistical.wape, 1)}{' '}
+                    vs hybrid <strong>{pct(bt.text_only_subset.hybrid.wape, 1)}</strong>.
+                  </>
+                )}
               </p>
             )}
             <table className="table compact">
@@ -394,6 +404,12 @@ export default function ScenarioPage() {
                   <tr key={r.sku_id}>
                     <td>
                       <a href={`#/sku/${r.sku_id}`}>{r.sku_id}</a>
+                      {r.text_only_event && (
+                        <>
+                          {' '}
+                          <Badge title="A text-only context event overlaps a hold-out window">text-only event</Badge>
+                        </>
+                      )}
                     </td>
                     <td>{r.hybrid_method ? <MethodBadge method={r.hybrid_method} /> : <span className="muted">off</span>}</td>
                     <td className="num">{pct(r.wape_naive, 1)}</td>

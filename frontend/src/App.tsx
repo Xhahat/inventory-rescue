@@ -5,6 +5,7 @@ import PlanPage from './pages/PlanPage';
 import InboxPage from './pages/InboxPage';
 import SkuPage from './pages/SkuPage';
 import ScenarioPage from './pages/ScenarioPage';
+import AssistantPage from './pages/AssistantPage';
 
 function readRoute(): string[] {
   return (window.location.hash.replace(/^#\/?/, '') || 'plan').split('/');
@@ -25,6 +26,7 @@ const NAV: [string, string][] = [
   ['inbox', 'Signal Inbox'],
   ['sku', 'SKU Detail'],
   ['scenario', 'Scenario & Value'],
+  ['assistant', 'Assistant'],
 ];
 
 export default function App() {
@@ -64,6 +66,7 @@ export default function App() {
         {page === 'inbox' && <InboxPage />}
         {page === 'sku' && <SkuPage key={route[1] ?? ''} skuId={route[1]} />}
         {page === 'scenario' && <ScenarioPage />}
+        {page === 'assistant' && <AssistantPage />}
         {!NAV.some(([k]) => k === page) && (
           <p>
             Unknown page. <a href="#/plan">Go to the plan</a>.

@@ -5,9 +5,12 @@
    empirical forecast errors at rolling in-sample origins, by horizon week.
 2. Known horizon events (weather, holidays, competitor moves, promotions) and confirmed signals are applied as
    multipliers. Priors come from the context feed; confirmed signals are fixed by the operator.
-3. The LLM may only *retune* the prior multiplier of each known context event (bounded) and add at most two small
-   extra adjustments. It never writes the series itself, so a bad answer can only move demand within tight bounds.
-   Invalid or missing LLM output -> the statistical forecast, labelled as such.
+   Text-only context events (no numeric prior, only a description) are unknown to the statistical forecaster:
+   it applies x1.0 to them, both when cleaning history and over the horizon. It never sees their true effect.
+3. The LLM may *retune* the prior multiplier of each known context event (bounded), *estimate* a multiplier and
+   effect window for each text-only event from its description (absolute bounds, a reason is required), and add at
+   most two small extra adjustments. It never writes the series itself, so a bad answer can only move demand within
+   bounds. Invalid or missing LLM output -> the statistical forecast, labelled as such.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ Z90 = 1.2816
 DEFAULT_EVENT_DAYS = 14
 DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 FIT_DAYS = 112
+SUMMARY_HISTORY_DAYS = 56
 INTERMITTENT_ZERO_SHARE = 0.3
 # LLM bounds
 EVENT_MULT_RANGE = (0.3, 3.0)
@@ -39,7 +43,9 @@ MAX_DRIVERS = 5
 
 @dataclass
 class EventLike:
-    """A demand driver over a date range. source: 'signal' (operator-confirmed, fixed) | 'context' (feed prior)."""
+    """A demand driver over a date range. source: 'signal' (operator-confirmed, fixed) | 'context' (feed prior).
+    prior_known=False marks a text-only context event: its multiplier is 1.0 (unknown) until a validated model
+    estimate replaces it."""
     id: Any
     kind: str
     start: date
@@ -47,6 +53,7 @@ class EventLike:
     multiplier: float
     description: str
     source: str = "signal"
+    prior_known: bool = True
 
 
 @dataclass
@@ -102,7 +109,8 @@ def multipliers(origin: date, n: int, events: Iterable[EventLike]) -> tuple[np.n
         if e < s or ev.multiplier <= 0:
             continue
         m[s:e + 1] *= ev.multiplier
-        drivers.append(f"{ev.description} (x{ev.multiplier:.3g}, {ev.start}..{ev.end})")
+        size = "text only, not quantified" if not ev.prior_known and ev.multiplier == 1.0 else f"x{ev.multiplier:.3g}"
+        drivers.append(f"{ev.description} ({size}, {ev.start}..{ev.end})")
     return m, drivers
 
 
@@ -220,8 +228,27 @@ def statistical_base(clean: Sequence[float], horizon: int) -> StatForecast:
     return StatForecast(np.minimum(p10, p50), p50, np.maximum(p90, p50), model, detail)
 
 
+def resolve_events(events: Sequence[EventLike], overrides: dict | None = None,
+                   windows: dict | None = None) -> list[EventLike]:
+    """Context events with the multiplier (and window) actually applied. Known priors may be replaced by a tuned
+    value; text-only events count as x1.0 unless a validated estimate is supplied (the statistical forecaster never
+    peeks at their true effect). Confirmed signals pass through unchanged."""
+    ov, win = overrides or {}, windows or {}
+    out = []
+    for e in events:
+        if e.source != "context":
+            out.append(e)
+            continue
+        k = _eid(e)
+        mult = float(ov.get(k, e.multiplier if e.prior_known else 1.0))
+        start, end = win.get(k, (e.start, e.end))
+        out.append(EventLike(e.id, e.kind, start, end, mult, e.description, e.source, e.prior_known))
+    return out
+
+
 def clean_history(history: Sequence[float], as_of: date, events: Sequence[EventLike]) -> np.ndarray:
-    """Divide out known historical context effects so the base model sees 'normal' demand."""
+    """Divide out historical context effects so the base model sees 'normal' demand. Uses each event's multiplier
+    as given: callers pass resolved events (text-only events are x1.0 unless estimated)."""
     h = np.asarray(history, dtype=float)
     origin = as_of - timedelta(days=len(h))
     m, _ = multipliers(origin, len(h), [e for e in events if e.source == "context"])
@@ -229,17 +256,15 @@ def clean_history(history: Sequence[float], as_of: date, events: Sequence[EventL
 
 
 def statistical_forecast(history: Sequence[float], as_of: date, horizon: int, events: Sequence[EventLike],
-                         overrides: dict | None = None, extras: Sequence[EventLike] = ()):
-    """Returns (p10, p50, p90, drivers, StatForecast). `overrides` maps context event id -> tuned multiplier."""
-    base = statistical_base(clean_history(history, as_of, events), horizon)
-    ov = overrides or {}
-    applied = []
-    for e in events:
-        if e.end < as_of or e.start >= as_of + timedelta(days=horizon):
-            continue
-        mult = float(ov.get(_eid(e), e.multiplier)) if e.source == "context" else e.multiplier
-        applied.append(EventLike(e.id, e.kind, e.start, e.end, mult, e.description, e.source))
-    m, drivers = multipliers(as_of, horizon, list(applied) + list(extras))
+                         overrides: dict | None = None, extras: Sequence[EventLike] = (),
+                         windows: dict | None = None):
+    """Returns (p10, p50, p90, drivers, StatForecast). `overrides` maps context event id -> tuned/estimated
+    multiplier, `windows` maps text-only event id -> (start, end) of its estimated effect. Without them this is
+    the pure statistical forecast, in which text-only events are x1.0."""
+    resolved = resolve_events(events, overrides, windows)
+    base = statistical_base(clean_history(history, as_of, resolved), horizon)
+    applied = [e for e in resolved if not (e.end < as_of or e.start >= as_of + timedelta(days=horizon))]
+    m, drivers = multipliers(as_of, horizon, applied + list(extras))
     drivers = [base.detail + " on context-cleaned history"] + drivers
     r = lambda a: np.round(a * m, 2).tolist()  # noqa: E731
     return r(base.base_p10), r(base.base_p50), r(base.base_p90), drivers, base
@@ -252,27 +277,60 @@ def _eid(e: EventLike) -> str:
 # ---------------------------------------------------------------- LLM adjustment layer
 
 def adjustable_events(as_of: date, horizon: int, events: Sequence[EventLike]) -> list[EventLike]:
+    """Context events the model may tune or estimate: those overlapping the horizon, plus text-only events inside
+    the history window shown to the model (estimating them lets their effect be removed from history)."""
     end = as_of + timedelta(days=horizon)
-    return [e for e in events if e.source == "context" and e.end >= as_of and e.start < end]
+    shown = as_of - timedelta(days=SUMMARY_HISTORY_DAYS)
+    return [e for e in events if e.source == "context" and e.start < end
+            and (e.end >= as_of or (not e.prior_known and e.end >= shown))]
+
+
+def _number(k: str, v: Any) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+        raise ValueError(f"{k}: multiplier must be a number")
+    return float(v)
 
 
 def validate_adjustments(obj: dict, adjustable: Sequence[EventLike], as_of: date, horizon: int) -> dict:
-    priors = {_eid(e): e.multiplier for e in adjustable}
+    """Known priors: number within EVENT_PRIOR_RATIO of the prior and EVENT_MULT_RANGE. Text-only events (no prior,
+    so no ratio check): {multiplier within EVENT_MULT_RANGE, reason (required), optional start/end inside the
+    event's feed window}."""
+    by_id = {_eid(e): e for e in adjustable}
     em = obj.get("event_multipliers", {}) or {}
     if not isinstance(em, dict):
         raise ValueError("event_multipliers must be an object of event id -> multiplier")
-    tuned = {}
+    tuned, windows, reasons = {}, {}, []
     for k, v in em.items():
-        if k not in priors:
+        if k not in by_id:
             raise ValueError(f"unknown or non-adjustable event id {k!r} (confirmed signals are fixed)")
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)):
-            raise ValueError(f"{k}: multiplier must be a number")
-        v = float(v)
-        lo = max(EVENT_MULT_RANGE[0], priors[k] * EVENT_PRIOR_RATIO[0])
-        hi = min(EVENT_MULT_RANGE[1], priors[k] * EVENT_PRIOR_RATIO[1])
-        if not lo - 1e-9 <= v <= hi + 1e-9:
-            raise ValueError(f"{k}: multiplier {v:g} outside [{lo:.2f}, {hi:.2f}] (prior {priors[k]:g})")
-        tuned[k] = v
+        ev = by_id[k]
+        if ev.prior_known:
+            v = _number(k, v.get("multiplier") if isinstance(v, dict) else v)
+            lo = max(EVENT_MULT_RANGE[0], ev.multiplier * EVENT_PRIOR_RATIO[0])
+            hi = min(EVENT_MULT_RANGE[1], ev.multiplier * EVENT_PRIOR_RATIO[1])
+            if not lo - 1e-9 <= v <= hi + 1e-9:
+                raise ValueError(f"{k}: multiplier {v:g} outside [{lo:.2f}, {hi:.2f}] (prior {ev.multiplier:g})")
+            tuned[k] = v
+            continue
+        if not isinstance(v, dict):
+            raise ValueError(f"{k}: text-only event needs an object {{multiplier, start, end, reason}}")
+        m = _number(k, v.get("multiplier"))
+        if not EVENT_MULT_RANGE[0] <= m <= EVENT_MULT_RANGE[1]:
+            raise ValueError(f"{k}: multiplier {m:g} outside {EVENT_MULT_RANGE}")
+        reason = str(v.get("reason") or "").strip()
+        if not reason:
+            raise ValueError(f"{k}: an estimate for a text-only event needs a reason")
+        try:
+            s = date.fromisoformat(str(v["start"])) if v.get("start") else ev.start
+            e = date.fromisoformat(str(v["end"])) if v.get("end") else ev.end
+        except ValueError as exc:
+            raise ValueError(f"{k}: start/end must be YYYY-MM-DD") from exc
+        if not (ev.start <= s <= e <= ev.end):
+            raise ValueError(f"{k}: effect window must lie within the event window {ev.start}..{ev.end}")
+        tuned[k] = m
+        if (s, e) != (ev.start, ev.end):
+            windows[k] = (s, e)
+        reasons.append(f"{k} x{m:.3g} ({s}..{e}): {reason}"[:200])
     extras_raw = obj.get("extra_adjustments", []) or []
     if not isinstance(extras_raw, list) or len(extras_raw) > MAX_EXTRA:
         raise ValueError(f"extra_adjustments must be a list of at most {MAX_EXTRA}")
@@ -295,12 +353,19 @@ def validate_adjustments(obj: dict, adjustable: Sequence[EventLike], as_of: date
     drivers = obj.get("drivers", []) or []
     if not isinstance(drivers, list):
         raise ValueError("drivers must be a list")
-    return {"event_multipliers": tuned, "extras": extras, "drivers": [str(d)[:200] for d in drivers[:MAX_DRIVERS]]}
+    return {"event_multipliers": tuned, "event_windows": windows, "estimates": reasons, "extras": extras,
+            "drivers": [str(d)[:200] for d in drivers[:MAX_DRIVERS]]}
+
+
+def _timing(e: EventLike, as_of: date) -> str:
+    if e.end < as_of:
+        return "past"
+    return "past+upcoming" if e.start < as_of else "upcoming"
 
 
 def build_summary(sku: dict, history: Sequence[float], as_of: date, horizon: int, events: Sequence[EventLike],
                   context_rows: Sequence[dict], baseline_p50: Sequence[float] | None = None) -> dict:
-    h = np.asarray(history[-56:], dtype=float)
+    h = np.asarray(history[-SUMMARY_HISTORY_DAYS:], dtype=float)
     start = as_of - timedelta(days=len(h))
     dow: dict[str, list[float]] = {}
     for i, v in enumerate(h):
@@ -322,7 +387,8 @@ def build_summary(sku: dict, history: Sequence[float], as_of: date, horizon: int
         "statistical_baseline_p50": None if baseline_p50 is None else [round(float(x), 1) for x in baseline_p50],
         "adjustable_events": [
             {"id": _eid(e), "kind": e.kind, "start": e.start.isoformat(), "end": e.end.isoformat(),
-             "prior_multiplier": round(e.multiplier, 3), "note": e.description}
+             "timing": _timing(e, as_of), "text_only": not e.prior_known,
+             "prior_multiplier": round(e.multiplier, 3) if e.prior_known else None, "note": e.description}
             for e in adjustable_events(as_of, horizon, events)],
         "fixed_confirmed_events": [
             {"id": _eid(e), "type": e.kind, "start": e.start.isoformat(), "end": e.end.isoformat(),
@@ -344,10 +410,12 @@ def forecast_one(llm: LLMClient | None, sku_id: str, summary: dict, history: Seq
     )
     if res.ok and res.value:
         v = res.value
-        p10, p50, p90, drivers, _ = statistical_forecast(history, as_of, horizon, events, v["event_multipliers"], v["extras"])
-        tuned = [f"{k} x{m:.3g}" for k, m in v["event_multipliers"].items()]
-        notes = v["drivers"] + ([f"Event multipliers tuned: {', '.join(tuned)}"] if tuned else [])
-        return ForecastOutput(sku_id, p10, p50, p90, (notes + drivers)[:8], "hybrid", None, h, [res.record])
+        p10, p50, p90, drivers, _ = statistical_forecast(history, as_of, horizon, events, v["event_multipliers"],
+                                                         v["extras"], v["event_windows"])
+        known = {_eid(e) for e in adj if e.prior_known}
+        tuned = [f"{k} x{m:.3g}" for k, m in v["event_multipliers"].items() if k in known]
+        notes = v["drivers"] + v["estimates"] + ([f"Event multipliers tuned: {', '.join(tuned)}"] if tuned else [])
+        return ForecastOutput(sku_id, p10, p50, p90, (notes + drivers)[:10], "hybrid", None, h, [res.record])
     p10, p50, p90, drivers, _ = statistical_forecast(history, as_of, horizon, events)
     return ForecastOutput(sku_id, p10, p50, p90, drivers, "statistical", res.error, h, [res.record])
 

@@ -16,6 +16,7 @@ class DecisionIn(BaseModel):
 
 class PlanIn(BaseModel):
     budget: float | None = Field(None, ge=0, le=10_000_000)
+    strategy: Literal["commit_now", "staggered", "reserve", "lean"] = "commit_now"
 
 
 class ScenarioIn(BaseModel):

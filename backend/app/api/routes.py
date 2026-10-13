@@ -365,7 +365,7 @@ def _plan(p: Plan) -> dict:
 
 @router.post("/api/plans")
 def create_plan(body: PlanIn, bg: BackgroundTasks, db: Session = Depends(get_db)):
-    p = plan_svc.create_plan(db, body.budget)
+    p = plan_svc.create_plan(db, body.budget, body.strategy)
     bg.add_task(plan_svc.run_job, p.summary["robustness"]["job_id"])
     return _plan(p)
 

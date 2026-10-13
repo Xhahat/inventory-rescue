@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 OPEN, CLOSE = "<<<UNTRUSTED_TEXT>>>", "<<<END_UNTRUSTED_TEXT>>>"
 
 GUARD = (
@@ -29,7 +29,10 @@ Return {{"events": [ ... ]}} where each event is:
   "start_date": "YYYY-MM-DD" or null, "end_date": "YYYY-MM-DD" or null,
   "quoted_evidence": exact verbatim substring of the message that supports the event}}
 Only use SKU ids that appear in the catalog. If a supplier is named, map it to that supplier's SKUs mentioned or
-implied (e.g. via a PO number). Return {{"events": []}} if nothing relevant."""
+implied (e.g. via a PO number). A product that is not in the catalog (e.g. a new flavour or variant) is not a
+catalog SKU: skip it rather than mapping it to a similar product. Skip speculative or unconfirmed events ("might",
+"not confirmed yet") that state no size, and events the message retracts or cancels; when a message corrects an
+earlier figure, use the latest one. Return {{"events": []}} if nothing relevant."""
 
 
 def signal_user(message: str, catalog: list[dict], suppliers: list[dict], open_pos: list[dict], as_of: str) -> str:
@@ -40,15 +43,23 @@ def signal_user(message: str, catalog: list[dict], suppliers: list[dict], open_p
 
 
 FORECAST_SYSTEM = f"""You are a demand analyst for a food/nutrition brand. A statistical model has already produced a
-baseline daily forecast (statistical_baseline_p50) from history with known past events removed.
+baseline daily forecast (statistical_baseline_p50) from history with past events of known size removed.
 {GUARD}
-Your only job is to judge how strongly each known upcoming event will move demand for THIS product.
-For every entry in adjustable_events you may return a multiplier that replaces its prior_multiplier
-(1.0 = no effect; keep the prior if you have no reason to change it). Allowed range: 0.5x to 2x the prior,
-and within 0.3..3. fixed_confirmed_events are operator-approved and cannot be changed; do not repeat them.
+Your only job is to judge how strongly each listed event moves demand for THIS product. adjustable_events has two kinds:
+1. Events with a numeric prior_multiplier. You may return a number that replaces it (1.0 = no effect; keep the prior
+   if you have no reason to change it). Allowed range: 0.5x to 2x the prior, and within 0.3..3.
+2. Text-only events (text_only: true, prior_multiplier null): the feed has only the note. The statistical model
+   assumes they have no effect (1.0). Estimate their effect on THIS product from the note and return an object
+   {{"multiplier": number within 0.3..3, "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "reason": "short reason"}}.
+   start/end are the days the effect applies; they must lie inside the event's start..end (the feed window can be
+   wider than the effect: read the dates in the note). Use multiplier 1.0 when the event does not plausibly affect
+   this product (e.g. it concerns a different product type). Consider substitution, which channels or regions are
+   involved and how long the effect lasts. Events with timing "past" or "past+upcoming" overlap the history shown;
+   your estimate is also used to remove their effect from history, so check history_daily_units around them.
+fixed_confirmed_events are operator-approved and cannot be changed; do not repeat them.
 Optionally add at most 2 extra_adjustments for effects that no listed event covers (e.g. a festival that matters
 for this product); each multiplier must be within 0.8..1.25 and dates must fall inside the forecast horizon.
-Return {{"event_multipliers": {{"<event id>": number, ...}},
+Return {{"event_multipliers": {{"<event id>": number or object as above, ...}},
 "extra_adjustments": [{{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "multiplier": number, "reason": "..."}}],
 "drivers": ["short reason", ...]}} with at most 5 drivers."""
 

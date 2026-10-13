@@ -93,6 +93,8 @@ def template_explanation(plan_json: dict) -> Explanation:
     for a in acts[:6]:
         what = a["kind"].replace("_", " ").replace("+", " + ")
         qty = f" {a['order_qty']} units" if a.get("order_qty") else ""
+        if a.get("later_qty"):
+            qty += f" now + {a['later_qty']} on {a.get('later_order_date')}"
         md = f" at {a['discount_pct'] * 100:.0f}% off" if a.get("discount_pct") else ""
         reason = a["reasons"][0] if a.get("reasons") else ""
         bullets.append(Bullet(

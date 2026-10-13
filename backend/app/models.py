@@ -82,7 +82,8 @@ class Receipt(Base):
 
 
 class ContextEvent(Base):
-    """Promotions, holidays, weather, competitor prices, social signals."""
+    """Promotions, holidays, weather, competitor prices, social signals. value = numeric prior (demand effect,
+    0.2 = +20%); None = text-only event: the description is the only information about its effect."""
 
     __tablename__ = "context_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -91,7 +92,7 @@ class ContextEvent(Base):
     end_date: Mapped[date] = mapped_column(Date)
     sku_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     category: Mapped[str | None] = mapped_column(String(60), nullable=True)
-    value: Mapped[float] = mapped_column(Float, default=0.0)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
     description: Mapped[str] = mapped_column(Text, default="")
 
 

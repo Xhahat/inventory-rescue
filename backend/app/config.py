@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # Robustness evaluation: number of Monte Carlo evaluation worlds.
     eval_worlds: int = 120
     rolling_worlds: int = 20
+    # Plan options (commit now / staggered / reserve / lean), each run with weekly re-planning.
+    option_worlds: int = 10  # calm worlds; the same number of shock worlds is added
+    working_capital_rate: float = 0.18  # annual cost of cash tied up in stock (used by the staggered option)
+    reserve_share: float = 0.3  # share of the budget the "keep a reserve" option holds back on day 0
+    lean_savings_share: float = 0.9  # "lean" = smallest budget keeping this share of the full-budget savings
 
     @property
     def resolved_llm_provider(self) -> str:
