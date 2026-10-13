@@ -1,0 +1,297 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, pct, waitForJob } from '../api';
+import type { IngestResult, Job, Signal } from '../api';
+import { Badge, Card, ErrorBox, MethodBadge, Spinner } from '../ui';
+
+const STATUS_TONE: Record<string, string> = { pending: 'warn', confirmed: 'ok', rejected: 'neutral', invalid: 'bad' };
+const EVENT_LABEL: Record<string, string> = {
+  supplier_delay: 'Supplier delay',
+  demand_spike: 'Demand spike',
+  demand_drop: 'Demand drop',
+  expiry_risk: 'Expiry risk',
+  other: 'Other',
+};
+
+function magnitudeText(s: Signal): string {
+  if (s.event_type === 'supplier_delay') return `+${s.magnitude} days`;
+  if (s.event_type.startsWith('demand')) return `×${s.magnitude} demand`;
+  if (s.event_type === 'expiry_risk') return s.magnitude ? `${s.magnitude} units at risk` : '';
+  return s.magnitude ? String(s.magnitude) : '';
+}
+
+function JobLine({ job }: { job: Job }) {
+  const res = job.result as { computed?: Record<string, string>; reused?: string[] } | null;
+  return (
+    <div className="job">
+      Job #{job.id} {job.kind} ({String(job.payload.trigger ?? '')}):{' '}
+      {job.status === 'done' ? (
+        <Badge kind="ok">done</Badge>
+      ) : job.status === 'failed' ? (
+        <Badge kind="bad">failed</Badge>
+      ) : (
+        <Spinner label={job.status} />
+      )}
+      {res?.computed && (
+        <span className="muted small">
+          {' '}
+          re-forecast:{' '}
+          {Object.entries(res.computed)
+            .map(([k, v]) => `${k} (${v})`)
+            .join(', ') || 'none'}
+          {res.reused?.length ? ` · reused ${res.reused.length}` : ''}
+        </span>
+      )}
+      {job.error && <span className="error-inline"> {job.error}</span>}
+      {job.status === 'done' && (
+        <span>
+          {' '}
+          → <a href="#/plan">Re-plan with the new forecast</a>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SignalCard({
+  s,
+  onDecide,
+  busy,
+}: {
+  s: Signal;
+  onDecide: (s: Signal, d: 'confirm' | 'reject') => void;
+  busy: boolean;
+}) {
+  return (
+    <div className={`signal signal-${s.status}`}>
+      <div className="signal-head">
+        <strong>{s.ref}</strong> <Badge kind={STATUS_TONE[s.status] ?? 'neutral'}>{s.status}</Badge>{' '}
+        <strong>{EVENT_LABEL[s.event_type] ?? s.event_type}</strong> <span>{magnitudeText(s)}</span>
+        <span className="muted small">
+          {' '}
+          {s.start_date ?? '?'} → {s.end_date ?? '?'}
+        </span>
+      </div>
+      <div className="chips">
+        {s.sku_ids.map((k) => (
+          <a key={k} className="chip" href={`#/sku/${k}`}>
+            {k}
+          </a>
+        ))}
+        {s.sku_ids.length === 0 && <span className="muted small">no SKUs</span>}
+      </div>
+      {s.quoted_evidence && <blockquote>“{s.quoted_evidence}”</blockquote>}
+      {s.rejection_reason && (
+        <div className={s.status === 'invalid' ? 'error-inline' : 'muted small'}>
+          {s.status === 'invalid' ? 'Failed validation: ' : 'Reason: '}
+          {s.rejection_reason}
+        </div>
+      )}
+      {(s.status === 'pending' || s.status === 'confirmed' || s.status === 'rejected') && (
+        <div className="signal-actions">
+          {s.status !== 'confirmed' && (
+            <button className="primary" disabled={busy} onClick={() => onDecide(s, 'confirm')}>
+              Confirm
+            </button>
+          )}
+          {s.status !== 'rejected' && (
+            <button disabled={busy} onClick={() => onDecide(s, 'reject')}>
+              Reject
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function InboxPage() {
+  const [demos, setDemos] = useState<{ name: string; text: string }[]>([]);
+  const [text, setText] = useState('');
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [last, setLast] = useState<IngestResult | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string>('all');
+  const fileRef = useRef<HTMLInputElement>(null);
+  const csvRef = useRef<HTMLInputElement>(null);
+
+  const loadSignals = useCallback(() => api.signals().then(setSignals).catch((e) => setError(e.message)), []);
+
+  useEffect(() => {
+    api.demoMessages().then(setDemos).catch(() => setDemos([]));
+    loadSignals();
+  }, [loadSignals]);
+
+  const track = async (job: Job) => {
+    setJobs((js) => [job, ...js.filter((j) => j.id !== job.id)]);
+    await waitForJob(job.id, (j) => setJobs((js) => js.map((x) => (x.id === j.id ? j : x))));
+  };
+
+  const ingest = async (fn: () => Promise<IngestResult>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setLast(await fn());
+      await loadSignals();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decide = async (s: Signal, d: 'confirm' | 'reject') => {
+    let reason: string | undefined;
+    if (d === 'reject') {
+      reason = window.prompt('Reason for rejecting (optional)') ?? undefined;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = d === 'confirm' ? await api.confirm(s.id) : await api.reject(s.id, reason);
+      await loadSignals();
+      setLast((l) => (l ? { ...l, events: l.events.map((e) => (e.id === r.signal.id ? r.signal : e)) } : l));
+      setBusy(false);
+      if (r.job) await track(r.job);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  const importCsv = async (f: File) => {
+    setError(null);
+    setImportMsg(null);
+    try {
+      const r = await api.importSales(f);
+      setImportMsg(`Imported ${r.imported} sales rows for ${r.skus.length} SKU(s). Re-forecasting…`);
+      await track(r.job);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const shown = filter === 'all' ? signals : signals.filter((s) => s.status === filter);
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>Signal Inbox</h1>
+          <p className="muted">
+            Paste supplier or campaign messages. Extracted events need your confirmation before they change any
+            forecast.
+          </p>
+        </div>
+      </div>
+      <ErrorBox error={error} />
+
+      <div className="grid2">
+        <Card title="New message">
+          <div className="toolbar wrap">
+            <span className="muted small">Demo messages:</span>
+            {demos.map((d) => (
+              <button key={d.name} onClick={() => setText(d.text)} disabled={busy}>
+                {d.name.replace(/^\d+_/, '').replace(/_/g, ' ')}
+              </button>
+            ))}
+          </div>
+          <textarea
+            rows={9}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="e.g. Hi team, QuickPack here — the shipment on PO-2041 will slip by about 9 days…"
+          />
+          <div className="toolbar">
+            <button
+              className="primary"
+              disabled={busy || !text.trim()}
+              onClick={() => ingest(() => api.postMessage(text))}
+            >
+              {busy ? <Spinner label="Extracting…" /> : 'Extract signals'}
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".txt,.eml,text/plain"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) ingest(() => api.uploadMessage(f));
+                e.target.value = '';
+              }}
+            />
+            <button disabled={busy} onClick={() => fileRef.current?.click()}>
+              Upload .txt
+            </button>
+          </div>
+        </Card>
+
+        <Card title="Last extraction">
+          {!last && <p className="muted">Nothing extracted yet in this session.</p>}
+          {last && (
+            <>
+              <p>
+                Message #{last.message_id} · <MethodBadge method={last.extraction_method} reason={last.llm_error} /> ·{' '}
+                {last.events.length} event(s)
+              </p>
+              {last.llm_error && <p className="muted small">LLM output rejected: {last.llm_error}</p>}
+              {last.events.map((s) => (
+                <SignalCard key={s.id} s={s} onDecide={decide} busy={busy} />
+              ))}
+            </>
+          )}
+          {jobs.map((j) => (
+            <JobLine key={j.id} job={j} />
+          ))}
+        </Card>
+      </div>
+
+      <Card
+        title={`All signals (${signals.length})`}
+        actions={
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+            {['all', 'pending', 'confirmed', 'rejected', 'invalid'].map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+        }
+      >
+        {shown.length === 0 ? (
+          <p className="muted">No signals.</p>
+        ) : (
+          <div className="signal-grid">
+            {shown.map((s) => (
+              <SignalCard key={s.id} s={s} onDecide={decide} busy={busy} />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title="Import sales CSV">
+        <p className="muted small">
+          Columns: <code>sale_date, sku_id, channel, segment, units</code>. The whole file is rejected if any row is
+          invalid. A successful import triggers a re-forecast job.
+        </p>
+        <input
+          ref={csvRef}
+          type="file"
+          accept=".csv,text/csv"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) importCsv(f);
+            e.target.value = '';
+          }}
+        />
+        <button onClick={() => csvRef.current?.click()}>Choose CSV…</button>
+        {importMsg && <p>{importMsg}</p>}
+        <p className="muted small">Signal magnitudes for demand are multipliers (e.g. 1.6 = {pct(0.6)} uplift).</p>
+      </Card>
+    </div>
+  );
+}

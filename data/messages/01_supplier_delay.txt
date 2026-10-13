@@ -1,0 +1,4 @@
+From: QuickPack Foods <dispatch@quickpack.example>
+Subject: Delay on open orders PO-2041 and PO-2042
+
+Hi team, due to a packaging film shortage at our converter, PO-2041 (Roasted Makhana Peri Peri 90g) and PO-2042 (Millet Chips Tomato 70g) will be delayed by 9 days. We will share revised dispatch dates by Friday. Apologies for the inconvenience.

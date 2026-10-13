@@ -1,0 +1,26 @@
+name: inventory-rescue
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: irc-postgres
+    environment:
+      POSTGRES_USER: irc
+      POSTGRES_PASSWORD: irc_local_dev
+      POSTGRES_DB: inventory_rescue
+    ports:
+      - "5433:5432"
+    volumes:
+      - irc_pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U irc -d inventory_rescue"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # The API service will be added here for Cloud Run parity (M5).
+
+volumes:
+  irc_pgdata:

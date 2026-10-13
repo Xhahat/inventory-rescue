@@ -1,0 +1,5 @@
+po_id,sku_id,supplier_id,qty,order_date,expected_date,status
+PO-2043,SKU-004,SUP-01,180,2026-10-07,2026-10-17,open
+PO-2041,SKU-007,SUP-04,456,2026-10-09,2026-10-16,open
+PO-2042,SKU-009,SUP-04,420,2026-10-08,2026-10-15,open
+PO-2044,SKU-026,SUP-01,120,2026-10-09,2026-10-19,open

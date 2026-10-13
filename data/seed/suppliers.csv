@@ -1,0 +1,5 @@
+supplier_id,name,stated_lead_time_days,expedite_lead_time_days,expedite_premium_pct,terms
+SUP-01,NutriSource Labs,10,4,0.18,Protein & supplements. Net 30. MOQ per SKU; air expedite +18%.
+SUP-02,GreenField Foods,8,3,0.2,"Spreads, muesli, granola. Net 21. Express truck +20%."
+SUP-03,BrewWell Beverages,6,2,0.15,"RTD beverages, tea. Net 15. Same-city express +15%."
+SUP-04,QuickPack Organics,7,3,0.25,Snacks co-packer. Advance 50%. Express courier +25%.

@@ -1,0 +1,15 @@
+kind,start_date,end_date,sku_id,category,value,description
+weather,2026-06-15,2026-06-30,,Beverages,0.3,Heatwave across north India; RTD beverage demand up
+weather,2026-07-01,2026-09-15,,Beverages,-0.1,Monsoon season; cold beverages soften
+promotion,2026-08-13,2026-08-17,,Protein,0.25,Independence Day sale: 15% off protein
+holiday,2026-08-15,2026-08-15,,,0.0,Independence Day
+holiday,2026-09-12,2026-09-16,,Snacks,0.25,Ganesh Chaturthi festive snacking
+social,2026-09-01,2026-09-30,SKU-007,,0.2,#makhana trending on Instagram reels
+competitor,2026-09-20,2026-10-05,SKU-001,,-0.15,Rival whey brand 20% off on Amazon
+competitor,2026-09-20,2026-10-05,SKU-002,,-0.15,Rival whey brand 20% off on Amazon
+promotion,2026-09-25,2026-09-30,,Supplements,0.2,Wellness week bundle offer
+weather,2026-10-13,2026-10-31,,Beverages,0.1,Post-monsoon heat forecast (IMD)
+holiday,2026-10-18,2026-10-21,,Snacks,0.2,Dussehra / Navratri festive demand
+promotion,2026-11-01,2026-11-09,,Snacks,0.35,Diwali gift-box promotion: snacks 15% off
+holiday,2026-11-08,2026-11-08,,,0.0,Diwali
+competitor,2026-10-10,2026-10-25,SKU-001,,-0.1,Rival whey festive discount 15%

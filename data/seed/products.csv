@@ -1,0 +1,31 @@
+sku_id,name,category,supplier_id,unit_cost,unit_price,case_pack,moq,shelf_life_days,image_key
+SKU-001,Whey Protein Chocolate 1kg,Protein,SUP-01,1150,1899,4,8,365,products/sku-001.png
+SKU-002,Whey Protein Vanilla 1kg,Protein,SUP-01,1150,1899,4,8,365,products/sku-002.png
+SKU-003,Plant Protein Unflavoured 500g,Protein,SUP-01,640,1099,6,12,365,products/sku-003.png
+SKU-004,Protein Bar Peanut Choco 6-pack,Protein,SUP-01,210,360,12,24,180,products/sku-004.png
+SKU-005,Protein Bar Almond Fudge 6-pack,Protein,SUP-01,210,360,12,24,180,products/sku-005.png
+SKU-006,Protein Cookies Oat 4-pack,Protein,SUP-01,120,220,12,24,120,products/sku-006.png
+SKU-007,Roasted Makhana Peri Peri 90g,Snacks,SUP-04,55,110,24,48,120,products/sku-007.png
+SKU-008,Roasted Makhana Himalayan Salt 90g,Snacks,SUP-04,55,110,24,48,120,products/sku-008.png
+SKU-009,Millet Chips Tomato 70g,Snacks,SUP-04,35,70,30,60,90,products/sku-009.png
+SKU-010,Ragi Crackers 150g,Snacks,SUP-04,48,95,24,48,120,products/sku-010.png
+SKU-011,Trail Mix Classic 200g,Snacks,SUP-04,140,260,12,24,150,products/sku-011.png
+SKU-012,Baked Chickpea Puffs 60g,Snacks,SUP-04,30,60,30,60,90,products/sku-012.png
+SKU-013,Cold Brew Coffee 250ml,Beverages,SUP-03,60,140,24,48,60,products/sku-013.png
+SKU-014,Kombucha Ginger Lemon 330ml,Beverages,SUP-03,70,150,24,48,45,products/sku-014.png
+SKU-015,Electrolyte Drink Orange 500ml,Beverages,SUP-03,35,80,24,48,180,products/sku-015.png
+SKU-016,Coconut Water 1L,Beverages,SUP-03,65,130,12,24,90,products/sku-016.png
+SKU-017,Green Tea Tulsi 25 bags,Beverages,SUP-03,90,185,24,24,365,products/sku-017.png
+SKU-018,Oat Milk Barista 1L,Beverages,SUP-03,120,230,12,24,120,products/sku-018.png
+SKU-019,Peanut Butter Crunchy 1kg,Breakfast & Spreads,SUP-02,210,499,12,12,270,products/sku-019.png
+SKU-020,Peanut Butter Creamy 1kg,Breakfast & Spreads,SUP-02,260,499,12,12,270,products/sku-020.png
+SKU-021,Almond Butter 500g,Breakfast & Spreads,SUP-02,420,799,6,12,270,products/sku-021.png
+SKU-022,Millet Muesli 400g,Breakfast & Spreads,SUP-02,150,299,12,24,180,products/sku-022.png
+SKU-023,Overnight Oats Berry 500g,Breakfast & Spreads,SUP-02,140,280,12,24,180,products/sku-023.png
+SKU-024,Honey Granola 450g,Breakfast & Spreads,SUP-02,165,320,12,24,150,products/sku-024.png
+SKU-025,Multivitamin Women 60 tabs,Supplements,SUP-01,210,499,24,24,540,products/sku-025.png
+SKU-026,Omega-3 Fish Oil 60 caps,Supplements,SUP-01,260,599,24,24,540,products/sku-026.png
+SKU-027,Vitamin D3 + K2 60 caps,Supplements,SUP-01,160,399,24,24,540,products/sku-027.png
+SKU-028,Ashwagandha 60 caps,Supplements,SUP-01,140,349,24,24,540,products/sku-028.png
+SKU-029,Apple Cider Vinegar Gummies 60,Supplements,SUP-01,190,449,20,20,365,products/sku-029.png
+SKU-030,Biotin Gummies 60,Supplements,SUP-01,170,399,20,20,365,products/sku-030.png
