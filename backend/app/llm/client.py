@@ -31,20 +31,29 @@ class LiteLLMClient:
         self.model = model
         self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=1)
         self._json_mode = True
+        self._temperature = True
 
     def complete(self, system: str, user: str) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        kwargs: dict[str, Any] = {"model": self.model, "messages": messages, "temperature": 0}
-        if self._json_mode:
+        # Some models (e.g. reasoning models) only accept the default temperature or no response_format; each
+        # rejected parameter is dropped once and remembered for this client.
+        while True:
+            kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
+            if self._temperature:
+                kwargs["temperature"] = 0
+            if self._json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
             try:
-                resp = self._client.chat.completions.create(response_format={"type": "json_object"}, **kwargs)
+                resp = self._client.chat.completions.create(**kwargs)
                 return resp.choices[0].message.content or ""
-            except Exception as exc:  # some backends reject response_format / temperature
-                if "response_format" not in str(exc) and "json" not in str(exc).lower():
+            except Exception as exc:
+                msg = str(exc).lower()
+                if self._temperature and "temperature" in msg:
+                    self._temperature = False
+                elif self._json_mode and ("response_format" in msg or "json" in msg):
+                    self._json_mode = False
+                else:
                     raise
-                self._json_mode = False
-        resp = self._client.chat.completions.create(**kwargs)
-        return resp.choices[0].message.content or ""
 
 
 class VertexGeminiClient:

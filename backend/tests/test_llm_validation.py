@@ -229,3 +229,34 @@ def test_explain_falls_back_to_template():
     method, exp, rec, err = explanation.explain(Fixed('{"summary": "Saves INR 123,456,789.", "bullets": []}'), PLAN_JSON)
     assert method == "template" and rec.status == "invalid" and "123" in err
     explanation.validate_explanation(exp.model_dump(), PLAN_JSON)  # template output passes its own validator
+
+def test_openai_client_drops_rejected_params():
+    from types import SimpleNamespace
+
+    from app.llm.client import LiteLLMClient
+
+    seen = []
+
+    def create(**kw):
+        seen.append(sorted(k for k in kw if k in ("temperature", "response_format")))
+        if "temperature" in kw:
+            raise RuntimeError("UnsupportedParamsError: this model does not support temperature=0")
+        if "response_format" in kw:
+            raise RuntimeError("response_format json_object is not supported")
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"x": 5}'))])
+
+    c = LiteLLMClient("http://localhost:1", "k", "reasoning-model")
+    c._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    assert c.complete("s", "u") == '{"x": 5}'
+    assert seen == [["response_format", "temperature"], ["response_format"], []]
+    seen.clear()
+    assert c.complete("s", "u") == '{"x": 5}'
+    assert seen == [[]]  # remembered for later calls
+
+    def broken(**kw):
+        raise RuntimeError("connection reset")
+
+    c2 = LiteLLMClient("http://localhost:1", "k", "m")
+    c2._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=broken)))
+    with pytest.raises(RuntimeError):
+        c2.complete("s", "u")

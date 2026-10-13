@@ -97,6 +97,31 @@ Caveats:
 
 On seven live questions (gpt-5.4-mini), including a follow-up, every answer passed the number check on the first attempt in 3–8 s. Each used 1–4 tool calls: explaining a SKU decision, a 40k hero-first replan, a supplier slip, expiry markdowns, 50k vs 75k, and a supplier email draft.
 
+### Model comparison
+
+The same three evaluations ran on every chat model available on our OpenAI-compatible gateway. Calls that failed under load (timeouts, transient gateway errors) were retried, so the table reflects quality, not network luck. The statistical baseline is 29.8% WAPE overall and 31.5% on the text-only series. Assistant latency is the median per question, measured one model at a time; it includes tool execution (about 1 s).
+
+| Model | Extraction F1 | Messages fully correct | False event on no-event msgs | Forecast WAPE, all / text-only | Assistant: validated (first try) | Assistant latency |
+|---|---|---|---|---|---|---|
+| gpt-5.4-mini (default) | 0.984 | 97.5% | 1 / 14 | 29.1% / 28.7% | 6/6 (6) | **4.0 s** |
+| claudesonnet4.5 | **1.000** | **100%** | 0 | 29.1% / 28.8% | 6/6 (6) | 10.0 s |
+| gpt-5.1 | **1.000** | **100%** | 0 | 29.4% / 29.8% | 6/6 (6) | 7.6 s |
+| gpt-5.2 | 0.983 | 97.5% | 0 | 29.4% / 29.9% | 6/6 (6) | 9.2 s |
+| gpt-5 | 0.983 | 97.5% | 0 | **28.9% / 27.9%** | 6/6 (6) | 31.1 s |
+| gpt-5.3-chat | 0.983 | 97.5% | 0 | **28.9% / 27.9%** | 0/6: gateway rejects tool calls | – |
+| gpt-5.6-luna | 0.983 | 97.5% | 0 | 29.5% / 30.6% | 6/6 (6) | 14.1 s |
+| claudeopus5 | 0.983 | 97.5% | 0 | 29.4% / 29.8% | 6/6 (4) | 11.7 s |
+| claudesonnet4.6 | 0.983 | 97.5% | 0 | 30.6% / 32.9% (worse than statistical) | 6/6 (5) | 7.9 s |
+| qwen3.6-27b | 0.966 | 95.0% | 0 | 29.4% / 30.4% | 6/6 (3) | 18.1 s |
+
+What this shows:
+- **Extraction is close to saturated on this set.** Every model gets 38–40 of 40 messages right, and the differences are one or two messages. Seven models miss g26 ("cartons close to best-before, count pending"). gpt-5.2, claudeopus5 and claudesonnet4.6 leave the unit count empty, and the validator rejects an expiry event without a number, so this is partly a validator choice. gpt-5, gpt-5.3-chat, gpt-5.6-luna and qwen return no event. qwen also misquotes the Hindi message's evidence. gpt-5.4-mini is the only model that invents an event for a product not in the catalogue.
+- **Forecasting is where models differ.** On text-only series, gpt-5 and gpt-5.3-chat cut WAPE by about 3.5 pp against the statistical model, and gpt-5.4-mini and claudesonnet4.5 by about 2.7 pp. Most others manage 1–2 pp; gpt-5.6-luna under 1 pp. claudesonnet4.6 is worse than the statistical model. Every hybrid passed validation (75/75 forecasts).
+- **Speed:** gpt-5.4-mini is about 2–8× faster than the rest. gpt-5 is the most accurate forecaster but about 8× slower; its uncached batch backtest took about 13 minutes under load against about 1.5 for gpt-5.4-mini.
+- **Gateway quirks:** gpt-5, gpt-5.6-luna and claudeopus5 reject `temperature=0`. The client now drops a rejected parameter and retries; before that, these models fell back on every JSON task. gpt-5.3-chat is routed to a deployment that refuses tool calls on chat completions, so the assistant falls back to its labelled tool summary.
+- **Gemini, the target on Google Cloud, has not been measured yet.** It isn't on this gateway, and the Vertex path is only covered by unit tests. Run the same evaluations on Vertex before the demo.
+- With 40 messages, 75 forecasts and 6 questions, gaps of one or two messages, or under about 0.5 pp WAPE, are within noise. The extraction prompt rules were refined on gpt-5.4-mini's first-run errors.
+
 ## Architecture
 
 ```
