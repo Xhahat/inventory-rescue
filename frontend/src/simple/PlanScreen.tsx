@@ -3,7 +3,7 @@ import { api } from '../api';
 import type { Overview, Plan, Strategy } from '../api';
 import { Back, Problem, Working } from './parts';
 import { Icon } from './icons';
-import { actionSteps, actionWhy, kindIcon, rupees } from './plain';
+import { actionSteps, actionWhy, day, kindIcon, rupees } from './plain';
 
 const CHOICES: { key: Strategy; title: string; text: string }[] = [
   { key: 'commit_now', title: 'Buy it all now', text: 'Everything is ordered today. The simplest choice.' },
@@ -20,6 +20,7 @@ const TIP: Partial<Record<Strategy, string>> = {
 
 const digits = (s: string) => Number(s.replace(/[^\d]/g, ''));
 const lakh = (v: number) => (v >= 1e5 ? ` (${Number((v / 1e5).toFixed(2))} lakh)` : '');
+const roundUp = (v: number) => Math.ceil(v / 10000) * 10000;
 const short = (v: number) => (v >= 1e5 ? `₹${Number((v / 1e5).toFixed(1))} lakh` : rupees(v));
 
 export default function PlanScreen() {
@@ -61,9 +62,10 @@ export default function PlanScreen() {
     return () => clearTimeout(t);
   }, [rstatus, planId, plan]);
 
-  const make = async (strategy: Strategy = choice) => {
+  const make = async (strategy: Strategy = choice, amount?: number) => {
     setChoice(strategy);
-    const b = digits(budget);
+    if (amount) setBudget(amount.toLocaleString('en-IN'));
+    const b = amount ?? digits(budget);
     if (!b) {
       setError('Please type how much money you can spend, for example 10,00,000.');
       return;
@@ -100,7 +102,16 @@ export default function PlanScreen() {
     plan && overview?.forecasts.latest && new Date(overview.forecasts.latest) > new Date(plan.created_at);
   const strategy = s?.strategy ?? 'commit_now';
   const best = s?.robustness?.status === 'done' ? s.robustness.options?.best?.shock : undefined;
-  const tip = plan?.status === 'draft' && strategy === 'commit_now' && best && TIP[best] ? best : undefined;
+  const guide = s?.budget_guide;
+  // Edge case: the budget cannot buy even the cheapest useful order, so the plan can only hold sales.
+  const tooSmall = !!(plan && guide?.smallest_buy && plan.budget < guide.smallest_buy);
+  const free = !!s && s.cash_used < 1;
+  const keptByChoice = (strategy === 'reserve' || strategy === 'lean') && !!guide && plan!.budget >= guide.full_need;
+  const left = guide?.not_covered ?? [];
+  const hasOrders = !!plan?.actions.some((a) => a.order_qty > 0 || a.later_qty);
+  const hasSales = !!plan?.actions.some((a) => a.order_qty === 0 || a.kind.startsWith('markdown'));
+  const tip =
+    !tooSmall && plan?.status === 'draft' && strategy === 'commit_now' && best && TIP[best] ? best : undefined;
   const later = s && s.cash_today !== undefined ? s.cash_used - s.cash_today : 0;
   const savings = s?.scorecard.savings ?? 0;
   const aside = plan && s ? plan.budget - s.cash_used : 0;
@@ -108,8 +119,9 @@ export default function PlanScreen() {
   const sameBudget = plan && Math.round(plan.budget) === digits(budget);
   const sameKeep = Math.round((s?.reserve_share ?? 0.3) * 100) === keepPct;
   const optionRow = (k: Strategy) =>
-    sameBudget && (k !== 'reserve' || sameKeep) ? s?.options?.find((o) => o.key === k) : undefined;
+    sameBudget && !tooSmall && (k !== 'reserve' || sameKeep) ? s?.options?.find((o) => o.key === k) : undefined;
   const b = digits(budget);
+  const typedTooSmall = b > 0 && !!guide?.smallest_buy && b < guide.smallest_buy;
   const keepAmount = Math.round((b * keepPct) / 100);
   const safest = sameBudget ? best : undefined;
 
@@ -141,7 +153,17 @@ export default function PlanScreen() {
           onKeyDown={(e) => e.key === 'Enter' && !busy && make()}
         />
       </div>
-      {digits(budget) > 0 && <p className="s-muted">That is {rupees(digits(budget))}{lakh(digits(budget))}.</p>}
+      {b > 0 && (
+        <p className="s-muted">
+          That is {rupees(b)}
+          {lakh(b)}.
+          {typedTooSmall && (
+            <span className="s-warn-text">
+              {' '}This is too little to buy stock. The smallest order that helps costs about {rupees(guide!.smallest_buy!)}.
+            </span>
+          )}
+        </p>
+      )}
 
       <fieldset className="s-choices">
         <legend className="s-label">How do you want to buy?</legend>
@@ -161,7 +183,7 @@ export default function PlanScreen() {
                 {safest === c.key && <span className="s-badge">Safest in our tests</span>}
               </span>
               <span className="s-choice-text">{c.text}</span>
-              {!row && c.key === 'reserve' && b > 0 && (
+              {!row && c.key === 'reserve' && b > 0 && !typedTooSmall && (
                 <span className="s-choice-figure">
                   Up to {short(b - keepAmount)} now · {short(keepAmount)} kept
                 </span>
@@ -218,23 +240,39 @@ export default function PlanScreen() {
             </p>
           )}
 
-          <div className="s-summary">
-            <p className="s-big">
-              Spend <strong>{rupees(s.cash_used)}</strong> of your {rupees(plan.budget)}.
-            </p>
+          <div className={`s-summary${tooSmall ? ' s-summary-warn' : ''}`}>
+            {tooSmall ? (
+              <>
+                <p className="s-big">{rupees(plan.budget)} is not enough to buy any stock.</p>
+                <p>
+                  The smallest order that helps costs about <strong>{rupees(guide!.smallest_buy!)}</strong>.
+                </p>
+              </>
+            ) : free ? (
+              <p className="s-big">This plan needs no money.</p>
+            ) : (
+              <p className="s-big">
+                Spend <strong>{rupees(s.cash_used)}</strong> of your {rupees(plan.budget)}.
+              </p>
+            )}
             {later > 1 && (
               <p>
                 Pay {rupees(s.cash_today)} now and {rupees(later)} later, only if it is still needed.
               </p>
             )}
-            {(strategy === 'reserve' || strategy === 'lean') && aside > 1 && (
+            {!free && (strategy === 'reserve' || strategy === 'lean') && aside > 1 && (
               <p>Keep {rupees(aside)} aside. We'll look again at your next weekly check.</p>
             )}
-            {savings > 0 && (
-              <p className="s-good">
-                This should save you about <strong>{rupees(savings)}</strong> compared with reordering the usual way.
-              </p>
-            )}
+            {savings > 0 &&
+              (free ? (
+                <p className="s-good">
+                  The free steps below should still save you about <strong>{rupees(savings)}</strong>.
+                </p>
+              ) : (
+                <p className="s-good">
+                  This should save you about <strong>{rupees(savings)}</strong> compared with reordering the usual way.
+                </p>
+              ))}
           </div>
 
           {plan.actions.length === 0 ? (
@@ -242,7 +280,9 @@ export default function PlanScreen() {
           ) : (
             <>
               <h2>
-                Do {plan.actions.length === 1 ? 'this 1 thing' : `these ${plan.actions.length} things`}:
+                {tooSmall ? 'You can still do ' : 'Do '}
+                {plan.actions.length === 1 ? 'this 1 thing' : `these ${plan.actions.length} things`}
+                {free ? '. They cost nothing:' : ':'}
               </h2>
               <ol className="s-actions">
                 {plan.actions.map((a) => {
@@ -265,6 +305,40 @@ export default function PlanScreen() {
                 })}
               </ol>
             </>
+          )}
+
+          {left.length > 0 && (
+            <div className="s-short">
+              <p className="s-short-title">
+                <Icon name="alert" size={22} />
+                {keptByChoice
+                  ? `Not bought yet: ${left.length} product${left.length > 1 ? 's' : ''}`
+                  : `${left.length} product${left.length > 1 ? 's' : ''} still need${left.length > 1 ? '' : 's'} stock`}
+              </p>
+              <ul>
+                {left.slice(0, 3).map((x) => (
+                  <li key={x.sku_id}>
+                    <strong>{x.sku_name}</strong>
+                    {x.stockout_date && <span className="s-muted"> runs out around {day(x.stockout_date)}</span>}
+                  </li>
+                ))}
+                {left.length > 3 && <li className="s-muted">and {left.length - 3} more</li>}
+              </ul>
+              {keptByChoice ? (
+                <p>You can buy these at your weekly check with the money you kept aside.</p>
+              ) : (
+                <>
+                  <p>
+                    To cover everything, you would need about <strong>{short(roundUp(guide!.full_need))}</strong>.
+                  </p>
+                  {plan.status === 'draft' && (
+                    <button className="s-btn" onClick={() => make(choice, roundUp(guide!.full_need))} disabled={!!busy}>
+                      Make a plan with {short(roundUp(guide!.full_need))}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
           )}
 
           {tip && (
@@ -305,7 +379,8 @@ export default function PlanScreen() {
                   <Working text="Saving…" />
                 ) : (
                   <button className="s-btn s-primary s-wide" onClick={approve} disabled={!!busy}>
-                    <Icon name="check" /> Approve and get my order list
+                    <Icon name="check" /> Approve and get my{' '}
+                    {hasOrders && hasSales ? 'lists' : hasOrders ? 'order list' : 'sale list'}
                   </button>
                 )}
               </div>

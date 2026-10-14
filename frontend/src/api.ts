@@ -100,6 +100,10 @@ export type Plan = {
   summary: {
     budget: number; cash_used: number; cash_remaining: number; expected_loss_no_action: number;
     strategy?: Strategy; strategy_label?: string; cash_today?: number; cash_scheduled?: number; reserve_share?: number;
+    budget_guide?: {
+      full_need: number; smallest_buy: number | null;
+      not_covered: { sku_id: string; sku_name: string; avoidable_loss: number; best_cash: number; stockout_date: string | null }[];
+    };
     options?: PlanOption[];
     expected_loss_plan: number; n_actions: number; skus_at_risk: number;
     forecast_methods: Record<string, number>;

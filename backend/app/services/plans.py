@@ -22,8 +22,8 @@ from . import rolling
 from . import scenarios as scen
 from . import state
 from . import value
-from .planner import (action_reasons, baseline_actions, build_plan, prepare_menu, score_actions, solve_menu,
-                      tuned_baseline)
+from .planner import (MIN_BENEFIT_INR, PlanResult, action_reasons, baseline_actions, build_plan, prepare_menu,
+                      score_actions, solve_menu, tuned_baseline)
 from .simulator import Markdown
 from .supply import round_order_qty
 from .world import Action, SkuContext, World, defer
@@ -176,6 +176,37 @@ def _solve_strategy(menu, budget: float, strategy: str, reserve_share: float):
     return full, budget
 
 
+UNLIMITED_BUDGET = 1e12
+
+
+def _budget_guide(ctxs: list[SkuContext], pw: World, z: float, result: PlanResult, as_of: date) -> dict:
+    """What the budget does and does not cover, for framing small or tight budgets:
+    `full_need` = cash for the best action on every SKU with no budget limit; `smallest_buy` = the cheapest
+    purchase that improves any SKU; `not_covered` = SKUs whose best action buys stock but the plan buys none."""
+    menu = prepare_menu(ctxs, pw, UNLIMITED_BUDGET, z)
+    chosen = {d.ctx.sku_id: d for d in result.decisions}
+    need, smallest, short = 0.0, None, []
+    for m in menu.skus:
+        i = min(range(len(m.actions)), key=lambda k: m.outcomes[k].objective)
+        best_a, best_o = m.actions[i], m.outcomes[i]
+        need += best_a.cash_outlay
+        buys = [a.cash_outlay for a in m.actions if a.order_qty > 0]
+        if buys:
+            smallest = min(buys) if smallest is None else min(smallest, min(buys))
+        d = chosen.get(m.ctx.sku_id)
+        if d is None or best_a.order_qty == 0 or d.action.order_qty > 0 or d.action.later_qty > 0:
+            continue
+        gap = d.outcome.objective - best_o.objective
+        if gap > MIN_BENEFIT_INR:
+            so = d.outcome.first_stockout_day
+            short.append({"sku_id": m.ctx.sku_id, "sku_name": m.ctx.name, "avoidable_loss": round(gap, 2),
+                          "best_cash": round(best_a.cash_outlay, 2),
+                          "stockout_date": (as_of + timedelta(days=so)).isoformat() if so is not None else None})
+    short.sort(key=lambda x: -x["avoidable_loss"])
+    return {"full_need": round(need, 2), "smallest_buy": round(smallest, 2) if smallest is not None else None,
+            "not_covered": short}
+
+
 def _options(ctxs, menu, ew: World, budget: float, current: str,
              reserve_share: float) -> tuple[dict, list[dict]]:
     s = get_settings()
@@ -266,6 +297,7 @@ def _plan_core(snap, ctxs: list[SkuContext], pw: World, ew: World, budget: float
         "sensitivity": sens,
         "evaluation_world": ew.description,
         "planning_world": pw.description,
+        "budget_guide": _budget_guide(ctxs, pw, z, result, snap.as_of),
     }
     return result, base, rows, summary
 

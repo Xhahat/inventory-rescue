@@ -93,6 +93,19 @@ def test_plan_core_builds_four_options(world):
         plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="yolo")
 
 
+def test_budget_guide_frames_tiny_and_ample_budgets(world):
+    snap, ctxs, pw, ew = world
+    _, _, _, tiny = plans._plan_core(snap, ctxs, pw, ew, 20.0)
+    g = tiny["budget_guide"]
+    assert tiny["cash_used"] == 0 and g["smallest_buy"] > 20 and g["full_need"] >= g["smallest_buy"]
+    assert g["not_covered"] and all(x["avoidable_loss"] > 0 for x in g["not_covered"])
+    assert [x["avoidable_loss"] for x in g["not_covered"]] == sorted((x["avoidable_loss"] for x in g["not_covered"]),
+                                                                    reverse=True)
+    _, _, _, ample = plans._plan_core(snap, ctxs, pw, ew, g["full_need"] * 1.05)
+    assert ample["budget_guide"]["not_covered"] == []
+    assert ample["budget_guide"]["full_need"] == pytest.approx(g["full_need"])
+
+
 def test_reserve_share_is_chosen_per_plan(world, seeded_db):
     snap, ctxs, pw, ew = world
     _, _, _, summary = plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="reserve", reserve_share=0.5)
