@@ -1,7 +1,7 @@
-"""LLM adapter behind the `LLMClient` protocol. Google Cloud: Gemini on Vertex AI (google-genai SDK, Application
-Default Credentials, i.e. the Cloud Run service account). Local development: any OpenAI-compatible endpoint
-(e.g. a LiteLLM proxy). All callers go through `run_json_task`, which hashes inputs, parses JSON, validates and
-returns a log record (callers persist it)."""
+"""LLM adapter behind the `LLMClient` protocol. Default: Gemini through the google-genai SDK, either the Gemini API
+with a Google AI Studio key or Vertex AI with Application Default Credentials (the Cloud Run service account).
+Optional: any OpenAI-compatible endpoint (used for the multi-model comparison). All callers go through
+`run_json_task`, which hashes inputs, parses JSON, validates and returns a log record (callers persist it)."""
 
 from __future__ import annotations
 
@@ -56,32 +56,82 @@ class LiteLLMClient:
                     raise
 
 
-class VertexGeminiClient:
-    """Gemini on Vertex AI. JSON output is requested natively (response_mime_type) at temperature 0; the same
-    validators as every other provider still decide whether the output is used."""
+class _RateLimiter:
+    """Spaces calls evenly so at most `rpm` requests start per minute (0 = unlimited), across threads."""
 
-    def __init__(self, project: str, location: str, model: str, timeout: float = 60.0, client: Any = None):
+    def __init__(self, rpm: int):
+        self.interval = 60.0 / rpm if rpm and rpm > 0 else 0.0
+        self._next = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        if not self.interval:
+            return
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next)
+            self._next = start + self.interval
+        if start > now:
+            time.sleep(start - now)
+
+
+class VertexGeminiClient:
+    """Gemini via the google-genai SDK: Vertex AI (Application Default Credentials) by default, or the Gemini API
+    with a Google AI Studio key (see `GeminiAPIClient`). JSON output is requested natively (response_mime_type);
+    the same validators as every other provider still decide whether the output is used."""
+
+    def __init__(self, project: str | None, location: str, model: str, timeout: float = 60.0, client: Any = None,
+                 thinking_level: str | None = None, api_key: str | None = None, rpm: int = 0):
         from google.genai import types
 
         self.model = model
         self._types = types
+        self.thinking_level = (thinking_level or "").strip().upper() or None
+        self._limiter = _RateLimiter(rpm)
         if client is None:
             from google import genai
 
-            client = genai.Client(vertexai=True, project=project, location=location,
-                                  http_options=types.HttpOptions(timeout=int(timeout * 1000)))
+            # Retry rate limits (429; per-minute quotas reset within a minute) and transient overload (5xx).
+            retry = types.HttpRetryOptions(attempts=6, initial_delay=4.0, max_delay=60.0,
+                                           http_status_codes=[408, 429, 500, 502, 503, 504])
+            http = types.HttpOptions(timeout=int(timeout * 1000), retry_options=retry)
+            if api_key:
+                client = genai.Client(api_key=api_key, http_options=http)
+            else:
+                client = genai.Client(vertexai=True, project=project, location=location, http_options=http)
         self._client = client
 
+    def config(self, **kw) -> Any:
+        """GenerateContentConfig with the shared settings (temperature 0, optional thinking level)."""
+        if self.thinking_level:
+            kw["thinking_config"] = self._types.ThinkingConfig(thinking_level=self.thinking_level)
+        return self._types.GenerateContentConfig(temperature=0, **kw)
+
+    def generate(self, contents: Any, config: Any) -> Any:
+        self._limiter.wait()
+        return self._client.models.generate_content(model=self.model, contents=contents, config=config)
+
     def complete(self, system: str, user: str) -> str:
-        cfg = self._types.GenerateContentConfig(system_instruction=system, temperature=0,
-                                                response_mime_type="application/json")
-        resp = self._client.models.generate_content(model=self.model, contents=user, config=cfg)
-        return resp.text or ""
+        cfg = self.config(system_instruction=system, response_mime_type="application/json")
+        return self.generate(user, cfg).text or ""
+
+
+class GeminiAPIClient(VertexGeminiClient):
+    """Gemini API (generativelanguage.googleapis.com) authenticated with a Google AI Studio API key."""
+
+    def __init__(self, api_key: str, model: str, timeout: float = 60.0, client: Any = None,
+                 thinking_level: str | None = None, rpm: int = 0):
+        super().__init__(None, "global", model, timeout, client, thinking_level, api_key=api_key, rpm=rpm)
 
 
 def build_llm(s) -> LLMClient:
-    if s.resolved_llm_provider == "vertex":
-        return VertexGeminiClient(s.gcp_project, s.gcp_location, s.vertex_model, s.llm_timeout_seconds)
+    p = s.resolved_llm_provider
+    if p == "gemini":
+        return GeminiAPIClient(s.gemini_api_key, s.gemini_model, s.llm_timeout_seconds,
+                               thinking_level=s.gemini_thinking_level, rpm=s.gemini_rpm)
+    if p == "vertex":
+        return VertexGeminiClient(s.gcp_project, s.gcp_location, s.gemini_model, s.llm_timeout_seconds,
+                                  thinking_level=s.gemini_thinking_level, rpm=s.gemini_rpm)
     return LiteLLMClient(s.litellm_base_url, s.litellm_api_key, s.llm_model, s.llm_timeout_seconds)
 
 

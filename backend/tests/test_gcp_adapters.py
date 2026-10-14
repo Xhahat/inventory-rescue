@@ -1,4 +1,4 @@
-"""Google Cloud adapters (Gemini on Vertex AI, Cloud Storage, single-service static hosting) with fake SDK clients,
+"""Google Cloud adapters (Gemini API / Vertex AI, Cloud Storage, single-service static hosting) with fake SDK clients,
 so no credentials or network are needed."""
 
 from __future__ import annotations
@@ -16,14 +16,22 @@ def _settings(**env) -> Settings:
 
 
 def test_provider_resolution(monkeypatch):
-    for k in ("GCP_PROJECT", "GOOGLE_CLOUD_PROJECT", "LLM_PROVIDER", "LLM_DISABLED"):
+    for k in ("GCP_PROJECT", "GOOGLE_CLOUD_PROJECT", "LLM_PROVIDER", "LLM_DISABLED", "GEMINI_API_KEY",
+              "GOOGLE_API_KEY", "GEMINI_MODEL", "VERTEX_MODEL", "PROJECT_ID"):
         monkeypatch.delenv(k, raising=False)
     s = _settings(LITELLM_BASE_URL="http://x", LITELLM_API_KEY="k")
     assert s.resolved_llm_provider == "openai_compatible" and s.llm_configured
 
     s = _settings(GOOGLE_CLOUD_PROJECT="demo-proj")
     assert s.resolved_llm_provider == "vertex" and s.llm_configured
-    assert s.active_llm_model == "gemini-2.5-flash" and s.gcp_location == "global"
+    assert s.active_llm_model == "gemini-3.5-flash-lite" and s.gcp_location == "global"
+
+    # An AI Studio key wins over a project (no Application Default Credentials needed).
+    s = _settings(GEMINI_API_KEY="k", GOOGLE_CLOUD_PROJECT="demo-proj", LITELLM_BASE_URL="http://x",
+                  LITELLM_API_KEY="k")
+    assert s.resolved_llm_provider == "gemini" and s.llm_configured and s.active_llm_model == "gemini-3.5-flash-lite"
+    assert _settings(GOOGLE_API_KEY="k", GEMINI_MODEL="gemini-3.8-flash").active_llm_model == "gemini-3.8-flash"
+    assert not _settings(llm_provider="gemini").llm_configured  # gemini needs a key
 
     s = _settings(GOOGLE_CLOUD_PROJECT="demo-proj", llm_provider="openai_compatible")
     assert s.resolved_llm_provider == "openai_compatible" and not s.llm_configured
@@ -78,6 +86,22 @@ def test_build_llm_picks_vertex(monkeypatch):
     c = llm_client.build_llm(_settings(GOOGLE_CLOUD_PROJECT="demo-proj", GCP_LOCATION="europe-west4"))
     assert isinstance(c, llm_client.VertexGeminiClient)
     assert made["vertexai"] is True and made["project"] == "demo-proj" and made["location"] == "europe-west4"
+
+    made.clear()
+    c = llm_client.build_llm(_settings(GEMINI_API_KEY="secret", GOOGLE_CLOUD_PROJECT="demo-proj"))
+    assert isinstance(c, llm_client.GeminiAPIClient) and c.model == "gemini-3.5-flash-lite"
+    assert made["api_key"] == "secret" and "vertexai" not in made
+
+
+def test_gemini_thinking_level_is_sent():
+    fake = _FakeGenai('{"answer": 1}')
+    c = llm_client.GeminiAPIClient("k", "gemini-3.8-flash", client=fake, thinking_level="low")
+    assert llm_client.run_json_task(c, "t", "S", "U", lambda d: d["answer"]).ok
+    cfg = fake.models.calls[0]["config"]
+    assert str(cfg.thinking_config.thinking_level).endswith("LOW") and cfg.temperature == 0
+    plain = _FakeGenai('{"answer": 1}')
+    llm_client.GeminiAPIClient("k", "m", client=plain, thinking_level="").complete("S", "U")
+    assert plain.models.calls[0]["config"].thinking_config is None
 
 
 class _Blob:
@@ -160,3 +184,16 @@ def test_serves_built_frontend_next_to_api(monkeypatch, tmp_path, seeded_db):
     finally:
         monkeypatch.delenv("STATIC_DIR")
         get_settings.cache_clear()
+
+
+def test_rate_limiter_spaces_calls(monkeypatch):
+    clock = {"t": 100.0}
+    slept: list[float] = []
+    monkeypatch.setattr(llm_client.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(llm_client.time, "sleep", lambda s: slept.append(round(s, 3)))
+    lim = llm_client._RateLimiter(30)  # one call every 2 s
+    for _ in range(3):
+        lim.wait()
+    assert slept == [2.0, 4.0]
+    llm_client._RateLimiter(0).wait()  # unlimited: never sleeps
+    assert slept == [2.0, 4.0]

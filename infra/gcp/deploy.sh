@@ -5,9 +5,14 @@
 #   PROJECT_ID=my-project ./infra/gcp/deploy.sh            # private service (IAM-authenticated)
 #   PROJECT_ID=my-project PUBLIC=1 ./infra/gcp/deploy.sh   # public demo URL
 #
+# LLM: with GEMINI_API_KEY set (a Google AI Studio key) the key is stored in Secret Manager and the service calls the
+# Gemini API; without it the service uses Gemini on Vertex AI through its service account.
+#
+#   GEMINI_API_KEY=... PROJECT_ID=my-project PUBLIC=1 ./infra/gcp/deploy.sh
+#
 # Creates: required APIs, Artifact Registry repo, runtime service account, Cloud Storage bucket,
 # Cloud SQL for PostgreSQL 16 instance + database + user, Secret Manager secret holding DATABASE_URL,
-# the Cloud Run service, and a Cloud Run job that seeds the demo data (run once).
+# a Secret Manager secret holding the Gemini API key (if given), the Cloud Run service, and a Cloud Run job that seeds the demo data (run once).
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID}"
@@ -21,7 +26,9 @@ DB_USER="${DB_USER:-app}"
 BUCKET="${BUCKET:-${PROJECT_ID}-inventory-rescue}"
 SA_NAME="${SA_NAME:-inventory-rescue-run}"
 DB_SECRET="${DB_SECRET:-inventory-rescue-database-url}"
-VERTEX_MODEL="${VERTEX_MODEL:-gemini-2.5-flash}"
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash-lite}"
+GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+KEY_SECRET="${KEY_SECRET:-inventory-rescue-gemini-api-key}"
 GCP_LOCATION="${GCP_LOCATION:-global}"
 SEED="${SEED:-1}"
 PUBLIC="${PUBLIC:-0}"
@@ -80,10 +87,27 @@ fi
 gcloud secrets add-iam-policy-binding "$DB_SECRET" --member "serviceAccount:${SA}" \
   --role roles/secretmanager.secretAccessor >/dev/null
 
+SECRETS="DATABASE_URL=${DB_SECRET}:latest"
+if [[ -n "$GEMINI_API_KEY" ]]; then
+  say "Gemini API key in Secret Manager: ${KEY_SECRET}"
+  if gcloud secrets describe "$KEY_SECRET" >/dev/null 2>&1; then
+    printf '%s' "$GEMINI_API_KEY" | gcloud secrets versions add "$KEY_SECRET" --data-file -
+  else
+    printf '%s' "$GEMINI_API_KEY" | gcloud secrets create "$KEY_SECRET" --replication-policy automatic --data-file -
+  fi
+  gcloud secrets add-iam-policy-binding "$KEY_SECRET" --member "serviceAccount:${SA}" \
+    --role roles/secretmanager.secretAccessor >/dev/null
+  SECRETS="${SECRETS},GEMINI_API_KEY=${KEY_SECRET}:latest"
+  LLM_ENV="LLM_PROVIDER=gemini"
+else
+  LLM_ENV="LLM_PROVIDER=vertex,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_LOCATION=${GCP_LOCATION}"
+fi
+unset GEMINI_API_KEY
+
 say "Building image ${IMAGE}:${TAG} with Cloud Build"
 gcloud builds submit --tag "${IMAGE}:${TAG}" .
 
-ENV_VARS="LLM_PROVIDER=vertex,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCP_LOCATION=${GCP_LOCATION},VERTEX_MODEL=${VERTEX_MODEL}"
+ENV_VARS="${LLM_ENV},GEMINI_MODEL=${GEMINI_MODEL}"
 ENV_VARS="${ENV_VARS},STORAGE_BACKEND=gcs,GCS_BUCKET=${BUCKET}"
 
 if [[ "$PUBLIC" == "1" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
@@ -92,13 +116,13 @@ say "Deploying Cloud Run service: ${SERVICE}"
 # --no-cpu-throttling + min 1 instance: plan robustness evaluation and forecast refresh run as background work
 # after the HTTP response returns, so the CPU must stay allocated.
 gcloud run deploy "$SERVICE" --image "${IMAGE}:${TAG}" --region "$REGION" --service-account "$SA" \
-  --set-cloudsql-instances "$CONN" --set-secrets "DATABASE_URL=${DB_SECRET}:latest" \
+  --set-cloudsql-instances "$CONN" --set-secrets "$SECRETS" \
   --set-env-vars "$ENV_VARS" --cpu 2 --memory 2Gi --no-cpu-throttling --min-instances 1 --max-instances 3 \
   --concurrency 40 --timeout 300 "$AUTH_FLAG" --quiet
 
 say "Seed job: ${SERVICE}-seed"
 gcloud run jobs deploy "${SERVICE}-seed" --image "${IMAGE}:${TAG}" --region "$REGION" --service-account "$SA" \
-  --set-cloudsql-instances "$CONN" --set-secrets "DATABASE_URL=${DB_SECRET}:latest" \
+  --set-cloudsql-instances "$CONN" --set-secrets "$SECRETS" \
   --set-env-vars "$ENV_VARS" --cpu 2 --memory 2Gi --task-timeout 1800 --max-retries 0 \
   --command python --args=-m,scripts.seed,--no-generate --quiet
 if [[ "$SEED" == "1" ]]; then

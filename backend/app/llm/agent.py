@@ -1,7 +1,7 @@
 """Provider-agnostic tool calling. A `ToolSession` holds one conversation in the provider's own message format:
-OpenAI-compatible chat.completions (`tools` / `tool_calls` / role "tool") or Gemini on Vertex AI (function
-declarations, automatic function calling disabled, function responses). The assistant loop only sees `ModelTurn`s.
-The `complete()` protocol used by every other task is untouched."""
+OpenAI-compatible chat.completions (`tools` / `tool_calls` / role "tool") or Gemini, via an AI Studio key or Vertex
+AI (function declarations, automatic function calling disabled, function responses). The assistant loop only sees
+`ModelTurn`s. The `complete()` protocol used by every other task is untouched."""
 
 from __future__ import annotations
 
@@ -107,11 +107,14 @@ class GeminiToolSession:
     (including thought signatures) is appended verbatim before the function responses."""
 
     def __init__(self, client: Any, types: Any, model: str, system: str, history: list[dict],
-                 tools: list[ToolSpec]):
+                 tools: list[ToolSpec], config: Callable[..., Any] | None = None,
+                 generate: Callable[..., Any] | None = None):
         self._client = client
         self._t = types
         self.model = model
         self._system = system
+        self._config = config or (lambda **kw: types.GenerateContentConfig(temperature=0, **kw))
+        self._generate = generate or (lambda **kw: client.models.generate_content(model=model, **kw))
         self._tool = types.Tool(function_declarations=[
             types.FunctionDeclaration(name=t.name, description=t.description, parameters_json_schema=t.parameters)
             for t in tools])
@@ -120,12 +123,12 @@ class GeminiToolSession:
 
     def step(self, allow_tools: bool = True) -> ModelTurn:
         t = self._t
-        cfg = t.GenerateContentConfig(
-            system_instruction=self._system, temperature=0, tools=[self._tool],
+        cfg = self._config(
+            system_instruction=self._system, tools=[self._tool],
             automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
             tool_config=t.ToolConfig(function_calling_config=t.FunctionCallingConfig(
                 mode="AUTO" if allow_tools else "NONE")))
-        resp = self._client.models.generate_content(model=self.model, contents=self.contents, config=cfg)
+        resp = self._generate(contents=self.contents, config=cfg)
         fcs = list(getattr(resp, "function_calls", None) or []) if allow_tools else []
         cands = getattr(resp, "candidates", None) or []
         content = getattr(cands[0], "content", None) if cands else None
@@ -164,6 +167,7 @@ def make_tool_session(llm: Any, system: str, history: list[dict], tools: list[To
         return llm.tool_session(system, history, tools)
     if isinstance(llm, LiteLLMClient):
         return OpenAIToolSession(llm._client, llm.model, system, history, tools)
-    if isinstance(llm, VertexGeminiClient):
-        return GeminiToolSession(llm._client, llm._types, llm.model, system, history, tools)
+    if isinstance(llm, VertexGeminiClient):  # also GeminiAPIClient (AI Studio key)
+        return GeminiToolSession(llm._client, llm._types, llm.model, system, history, tools, config=llm.config,
+                                 generate=llm.generate)
     return None

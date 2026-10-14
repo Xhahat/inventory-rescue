@@ -165,6 +165,9 @@ def _fallback_answer(reason: str, calls: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# Stray C0 control characters occasionally appear in model output (seen with Gemini).
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 def answer(db: Session, messages: list[dict], llm=None) -> dict:
     t0 = time.perf_counter()
     hist = clean_history(messages)
@@ -219,7 +222,7 @@ def answer(db: Session, messages: list[dict], llm=None) -> dict:
                                   "result_summary": at.summarize(c.name, res), "result": res})
             session.add_tool_results(results)
             continue
-        text = (turn.text or "").strip()
+        text = _CONTROL_CHARS.sub("", turn.text or "").strip()
         if not text:
             records.append(CallRecord("assistant", h, llm.model, "invalid", "empty answer", ms, None))
             reason = "empty answer"

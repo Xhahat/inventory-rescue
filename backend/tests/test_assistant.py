@@ -167,6 +167,12 @@ def test_answer_validated_and_logged(db):
     assert [r.status for r in rows] == ["tool_calls", "ok"]
 
 
+def test_answer_strips_control_characters(db):
+    llm = ScriptedLLM([ModelTurn("\x19No plan yet.\x00\nAsk again\tlater.")])
+    out = assistant.answer(db, _ask("hello"), llm=llm)
+    assert out["method"] == "llm" and out["answer"] == "No plan yet.\nAsk again\tlater."
+
+
 def test_answer_repaired_after_one_correction(db):
     llm = ScriptedLLM([ModelTurn("", [_call("get_sku", sku_id="SKU-015")]),
                        ModelTurn("Expediting would save INR 98,765."), _grounded_answer])

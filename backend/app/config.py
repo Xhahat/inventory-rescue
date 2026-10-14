@@ -26,16 +26,26 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 4
     llm_timeout_seconds: float = 60.0
     llm_disabled: bool = False
-    # LLM provider: "auto" (Vertex AI when a Google Cloud project is set, else the OpenAI-compatible endpoint),
-    # "vertex" (Gemini on Vertex AI, Application Default Credentials) or "openai_compatible".
+    # LLM provider: "auto" (Gemini API when a Google AI Studio key is set, else Vertex AI when a Google Cloud
+    # project is set, else the OpenAI-compatible endpoint), "gemini" (Gemini API, AI Studio key), "vertex" (Gemini
+    # on Vertex AI, Application Default Credentials) or "openai_compatible".
     llm_provider: str = "auto"
+    gemini_api_key: str | None = Field(default=None, validation_alias=AliasChoices(
+        "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_STUDIO_API_KEY", "AI_STUDIO_API_KEY", "GEMINI_KEY"))
+    gemini_model: str = Field(default="gemini-3.5-flash-lite", validation_alias=AliasChoices(
+        "GEMINI_MODEL", "VERTEX_MODEL"))
+    # Gemini thinking level (low / medium / high); empty = the model's default.
+    gemini_thinking_level: str = "low"
+    # Client-side cap on Gemini requests per minute (0 = no cap). Set it just under the project's quota, e.g. 14 on
+    # the AI Studio free tier (15 RPM); paid tiers rarely need it.
+    gemini_rpm: int = 0
     gcp_project: str | None = Field(default=None, validation_alias=AliasChoices(
-        "GCP_PROJECT", "GOOGLE_CLOUD_PROJECT"))
+        "GCP_PROJECT", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT_ID", "GOOGLE_CLOUD_PROJECT_ID", "PROJECT_ID"))
     gcp_location: str = Field(default="global", validation_alias=AliasChoices(
         "GCP_LOCATION", "GOOGLE_CLOUD_LOCATION", "VERTEX_LOCATION"))
-    vertex_model: str = "gemini-2.5-flash"
 
-    database_url: str = "postgresql+psycopg://irc:irc_local_dev@localhost:5433/inventory_rescue"
+    # Default: a local SQLite file under var/ (no database server needed). Google Cloud: Cloud SQL for PostgreSQL.
+    database_url: str = f"sqlite:///{(ROOT_DIR / 'var' / 'inventory_rescue.db').as_posix()}"
     var_dir: str = "var"
     data_dir: str = str(ROOT_DIR / "data")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
@@ -68,19 +78,28 @@ class Settings(BaseSettings):
     @property
     def resolved_llm_provider(self) -> str:
         p = self.llm_provider.strip().lower()
-        if p in ("vertex", "openai_compatible"):
+        if p in ("gemini", "vertex", "openai_compatible"):
             return p
+        if self.gemini_api_key:
+            return "gemini"
         return "vertex" if self.gcp_project else "openai_compatible"
 
     @property
+    def vertex_model(self) -> str:
+        return self.gemini_model
+
+    @property
     def active_llm_model(self) -> str:
-        return self.vertex_model if self.resolved_llm_provider == "vertex" else self.llm_model
+        return self.gemini_model if self.resolved_llm_provider in ("gemini", "vertex") else self.llm_model
 
     @property
     def llm_configured(self) -> bool:
         if self.llm_disabled:
             return False
-        if self.resolved_llm_provider == "vertex":
+        p = self.resolved_llm_provider
+        if p == "gemini":
+            return bool(self.gemini_api_key)
+        if p == "vertex":
             return bool(self.gcp_project)
         return bool(self.litellm_base_url and self.litellm_api_key)
 
