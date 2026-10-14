@@ -39,6 +39,24 @@ expedite, a discount, skipping a SKU), score it with evaluate_alternative instea
 Percent inputs are fractions (35% -> 0.35)."""
 
 
+def system_for(style: str = "default") -> str:
+    return ASSISTANT_SYSTEM + SIMPLE_STYLE if style == "simple" else ASSISTANT_SYSTEM
+
+
+SIMPLE_STYLE = """
+
+Audience override (the Simple view): the reader is a shop owner who is new to computers and to planning tools. \
+These rules replace the answer-style rule and rule 4 above; the grounding rules 1-3 still apply.
+- Use product and supplier names only; never write SKU-, SUP-, LOT-, PO- or EV- ids.
+- Write dates as "18 Oct", never as ISO dates or "day 5".
+- Money in lakh with one decimal (e.g. about INR 28.5 lakh); units as whole numbers (about 2,270 units). \
+Round to the nearest value, never cut digits off, and never write decimals of units or rupees.
+- No jargon: do not say planning world, evaluation world, fill rate, MOQ, markdown, expedite, horizon or baseline. \
+Say "sale" for markdown, "fast delivery" for expedite, "the usual way of reordering" for the baseline.
+- One short sentence that answers the question, then at most 4 short bullets. No headings.
+- If no plan exists yet, suggest pressing "Make my plan"."""
+
+
 def correction(unsupported: list[str]) -> str:
     return ("Your answer was rejected by the grounding check. These values do not appear in any tool result or in my "
             f"message: {', '.join(unsupported[:12])}. Rewrite the answer using only numbers, dates and ids copied "

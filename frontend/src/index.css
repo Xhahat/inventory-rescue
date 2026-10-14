@@ -38,6 +38,8 @@ blockquote { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--bord
 .topbar nav a { color: #cbd5e1; padding: 6px 12px; border-radius: 6px; }
 .topbar nav a:hover { background: #1e293b; text-decoration: none; }
 .topbar nav a.active { background: #1e40af; color: #fff; }
+.topbar .status { display: flex; align-items: center; gap: 12px; }
+.topbar .simple-link { color: #fde68a; white-space: nowrap; }
 main { flex: 1; padding: 20px 24px; max-width: 1400px; width: 100%; margin: 0 auto; }
 .foot { padding: 12px 24px; text-align: center; }
 

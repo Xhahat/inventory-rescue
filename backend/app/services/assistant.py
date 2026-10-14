@@ -117,6 +117,8 @@ def check_grounding(text: str, evidence: list, user_texts: list[str] = ()) -> Gr
                 continue
         elif any(abs(x - a) < 0.011 for a in allowed):
             continue
+        elif not pct and "." not in num and any(0 <= v - x < 1 for v in absraw):
+            continue  # whole number written by cutting off a tool value's decimals (2,847,836.6 -> 2,847,836)
         elif not pct and x.is_integer() and x <= SMALL_INT and not _CURRENCY.search(t[:m.start()]):
             continue
         bad.append(m.group(0).strip())
@@ -168,7 +170,7 @@ def _fallback_answer(reason: str, calls: list[dict]) -> str:
 # Stray C0 control characters occasionally appear in model output (seen with Gemini).
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-def answer(db: Session, messages: list[dict], llm=None) -> dict:
+def answer(db: Session, messages: list[dict], llm=None, style: str = "default") -> dict:
     t0 = time.perf_counter()
     hist = clean_history(messages)
     llm = llm if llm is not None else get_llm()
@@ -176,14 +178,14 @@ def answer(db: Session, messages: list[dict], llm=None) -> dict:
     tc = at.ToolContext(db)
     tools = at.build_tools(tc)
     by_name = {t.name: t for t in tools}
-    session = make_tool_session(llm, ap.ASSISTANT_SYSTEM, hist, tools)
+    session = make_tool_session(llm, ap.system_for(style), hist, tools)
     if session is None:
         msg = DISABLED_MESSAGE if llm is None else \
             f"The configured model client ({type(llm).__name__}) does not support tool calling."
         return {**base, "answer": msg, "method": "disabled", "llm_disabled": True, "model": None, "latency_ms": 0}
 
     user_texts = [m["content"] for m in hist if m["role"] == "user"]
-    h = input_hash("assistant", ap.ASSISTANT_PROMPT_VERSION, hist)
+    h = input_hash("assistant", ap.ASSISTANT_PROMPT_VERSION, style, hist)
     records: list[CallRecord] = []
     calls_log: list[dict] = []
     evidence: list = []

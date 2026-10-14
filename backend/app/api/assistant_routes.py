@@ -21,11 +21,12 @@ class ChatMessage(BaseModel):
 
 class AssistantIn(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=60)
+    style: Literal["default", "simple"] = "default"
 
 
 @router.post("/api/assistant")
 def ask_assistant(body: AssistantIn, db: Session = Depends(get_db)):
     try:
-        return assistant.answer(db, [m.model_dump() for m in body.messages])
+        return assistant.answer(db, [m.model_dump() for m in body.messages], style=body.style)
     except ValueError as exc:
         raise HTTPException(400, str(exc))

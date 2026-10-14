@@ -6,9 +6,10 @@ import InboxPage from './pages/InboxPage';
 import SkuPage from './pages/SkuPage';
 import ScenarioPage from './pages/ScenarioPage';
 import AssistantPage from './pages/AssistantPage';
+import SimpleApp from './simple/SimpleApp';
 
 function readRoute(): string[] {
-  return (window.location.hash.replace(/^#\/?/, '') || 'plan').split('/');
+  return (window.location.hash.replace(/^#\/?/, '') || 'home').split('/');
 }
 
 function useHashRoute(): string[] {
@@ -31,6 +32,11 @@ const NAV: [string, string][] = [
 
 export default function App() {
   const route = useHashRoute();
+  if (route[0] === 'home' || route[0] === 's') return <SimpleApp screen={route[0] === 's' ? (route[1] ?? '') : ''} />;
+  return <AdvancedApp route={route} />;
+}
+
+function AdvancedApp({ route }: { route: string[] }) {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthErr, setHealthErr] = useState(false);
 
@@ -53,6 +59,9 @@ export default function App() {
           ))}
         </nav>
         <div className="status">
+          <a className="simple-link" href="#/">
+            Simple view
+          </a>
           {healthErr && <span className="badge badge-bad">API offline</span>}
           {health && (
             <span className={`badge ${health.llm_configured ? 'badge-ok' : 'badge-warn'}`}>

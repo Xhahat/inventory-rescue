@@ -30,11 +30,15 @@ export interface AssistantReply {
   latency_ms: number;
 }
 
-export async function askAssistant(messages: ChatMessage[], signal?: AbortSignal): Promise<AssistantReply> {
+export async function askAssistant(
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+  style: 'default' | 'simple' = 'default',
+): Promise<AssistantReply> {
   const r = await fetch('/api/assistant', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, style }),
     signal,
   });
   if (!r.ok) {

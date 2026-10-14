@@ -79,7 +79,7 @@ EVIDENCE = [{"args": {"sku_id": "SKU-015"}, "result": {
 @pytest.mark.parametrize("text", [
     "SKU-015 needs INR 12,345.67.", "Cash is ₹12.3k.", "About 12,346 rupees.", "Fill rate 90.95%.", "Fill rate 91%.",
     "Arrives 2026-10-19.", "Arrives 19 Oct.", "Arrives Oct 19th.", "Supplier SUP-03, lot LOT-015-A.",
-    "Loss ₹1.17 lakh.", "Order 336 units in 3 steps.", "Loss of INR 117,366."])
+    "Loss ₹1.17 lakh.", "Order 336 units in 3 steps.", "Loss of INR 117,366.", "Cash is INR 12,345."])
 def test_grounding_accepts_tool_numbers(text):
     g = assistant.check_grounding(text, EVIDENCE)
     assert g.ok, g.unsupported
@@ -87,7 +87,8 @@ def test_grounding_accepts_tool_numbers(text):
 
 @pytest.mark.parametrize("text,bad", [
     ("Cash is INR 99,999.", "99,999"), ("Order SKU-099 now.", "SKU-099"), ("Arrives 2026-11-01.", "2026-11-01"),
-    ("Fill rate 42%.", "42"), ("Cash ₹13.9k.", "13.9"), ("It costs ₹7.", "7"), ("Arrives 25 Oct.", "25 Oct")])
+    ("Fill rate 42%.", "42"), ("Cash ₹13.9k.", "13.9"), ("It costs ₹7.", "7"), ("Arrives 25 Oct.", "25 Oct"),
+    ("Cash is INR 12,344.", "12,344"), ("Fill rate 90%.", "90")])
 def test_grounding_rejects_invented_numbers(text, bad):
     g = assistant.check_grounding(text, EVIDENCE)
     assert not g.ok and any(bad in u for u in g.unsupported), g.unsupported
@@ -171,6 +172,22 @@ def test_answer_strips_control_characters(db):
     llm = ScriptedLLM([ModelTurn("\x19No plan yet.\x00\nAsk again\tlater.")])
     out = assistant.answer(db, _ask("hello"), llm=llm)
     assert out["method"] == "llm" and out["answer"] == "No plan yet.\nAsk again\tlater."
+
+
+def test_simple_style_adds_plain_language_instructions(db, client):
+    seen: list[str] = []
+
+    class Capturing(ScriptedLLM):
+        def tool_session(self, system, history, tools):
+            seen.append(system)
+            return super().tool_session(system, history, tools)
+
+    assistant.answer(db, _ask("hi"), llm=Capturing([ModelTurn("Hello.")]))
+    assistant.answer(db, _ask("hi"), llm=Capturing([ModelTurn("Hello.")]), style="simple")
+    assert seen[0] == assistant.ap.ASSISTANT_SYSTEM
+    assert seen[1].startswith(assistant.ap.ASSISTANT_SYSTEM) and "never write SKU-" in seen[1]
+    bad = client.post("/api/assistant", json={"messages": [{"role": "user", "content": "x"}], "style": "fancy"})
+    assert bad.status_code == 422
 
 
 def test_answer_repaired_after_one_correction(db):

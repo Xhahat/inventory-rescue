@@ -20,6 +20,7 @@ deployment.
 
 | Area | Details |
 |---|---|
+| Simple view (default) | The landing page is built for someone new to computers. It asks one question, "What would you like to do?", and offers three large buttons: **Make my plan**, **Read a message** and **Ask a question**. Everything is in plain words: product names instead of codes, "runs out around 2 Nov", "put the old stock on sale at 20% off", and yes/no buttons to confirm what a message said. Assistant answers use a plain-language style (`style: "simple"`) that keeps the same number checks. Each screen has a **← Back** button. The full planner tools below sit behind the **Advanced view** link. |
 | Signal inbox | Paste or upload a supplier email or campaign note. The LLM extracts typed events (`supplier_delay`, `demand_spike`, `demand_drop`, `expiry_risk`), each with a verbatim quote as evidence. Every event is validated and must be confirmed by a human before it affects a plan. An **extraction-quality card** scores the same extraction path on a 40-message labelled set. |
 | Forecasts (hybrid) | A statistical base is always computed: Holt-Winters (damped trend, weekly seasonality) or Croston/SBA for intermittent SKUs. p10/p90 come from rolling in-sample errors. Known calendar/context events and confirmed signals are applied as multipliers. About a third of the context feed is **text only** (a competitor recall, a heatwave, a homepage banner, an influencer reel): the statistical forecast treats those as ×1.0, and only the LLM can turn the description into a bounded multiplier. The LLM may only **retune event multipliers within bounds** (plus at most two small extra adjustments, each with a stated driver); it never writes the series. Invalid output means a labelled statistical forecast. |
 | Service level | SKUs in the top 20% by 28-day revenue are **hero** SKUs; each unit short costs a goodwill penalty (15% of price for heroes, 5% for others) in the optimiser. The operator can pin any SKU to hero / standard / auto. Plans report fill rate and hero fill rate. |
@@ -143,7 +144,7 @@ What this shows:
 ## Architecture
 
 ```
-frontend/  React + TypeScript + Vite + Recharts (hash routes: #/plan #/inbox #/sku #/scenario #/assistant)
+frontend/  React + TypeScript + Vite + Recharts (Simple view: #/ #/s/plan #/s/message #/s/ask; Advanced view: #/plan #/inbox #/sku #/scenario #/assistant)
 backend/   FastAPI + SQLAlchemy 2 (SQLite locally, PostgreSQL 16 / Cloud SQL on Google Cloud)
   app/api/routes.py        HTTP API (also serves the built frontend when STATIC_DIR exists)
   app/api/assistant_routes.py, eval_routes.py   planning assistant and extraction-evaluation endpoints
@@ -265,6 +266,13 @@ The service uses `--no-cpu-throttling` and `--min-instances 1`, because the robu
 Local container check: `docker build -t inventory-rescue . && docker run -p 8080:8080 -e DATABASE_URL=... inventory-rescue`.
 
 ## 5-minute demo
+
+**Simple view (2 minutes).** Open the app root.
+1. Click **Read a message**, then **Show me an example**, then **Read it**. Answer **Yes, use this** to the plain-language event and wait for "Your numbers are up to date".
+2. Click **Make a new plan**: it shows the amount to spend, the saving compared with the usual reordering, and one card per product. Click **Approve and get my order list** to download the CSVs.
+3. Click **← Back**, then **Ask a question**, and tap "Which products will run out first?".
+
+**Advanced view.** Click **Advanced view** at the top right.
 
 1. **Plan**: open `#/plan` and click **Generate plan** (₹10,00,000 budget). Review:
    - savings vs the tuned and static rules, fill rate and hero fill rate;

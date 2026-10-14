@@ -52,7 +52,7 @@ function inline(text: string, key: string): ReactNode[] {
   });
 }
 
-function Markdown({ text }: { text: string }) {
+export function Markdown({ text }: { text: string }) {
   const blocks: ReactNode[] = [];
   let list: { ordered: boolean; items: string[] } | null = null;
   let para: string[] = [];
