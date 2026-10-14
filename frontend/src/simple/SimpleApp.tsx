@@ -2,9 +2,34 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Overview } from '../api';
 import AskScreen from './AskScreen';
+import { Icon } from './icons';
+import type { IconName } from './icons';
 import MessageScreen from './MessageScreen';
 import PlanScreen from './PlanScreen';
+import { day } from './plain';
 import './simple.css';
+
+function Tile({ href, icon, title, text, badge, main }: {
+  href: string; icon: IconName; title: string; text: string; badge?: number; main?: boolean;
+}) {
+  return (
+    <a className={`s-tile${main ? ' s-tile-main' : ''}`} href={href}>
+      <span className="s-tile-icon">
+        <Icon name={icon} size={26} />
+      </span>
+      <span className="s-tile-body">
+        <span className="s-tile-title">
+          {title}
+          {!!badge && <span className="s-count">{badge} new</span>}
+        </span>
+        <span className="s-tile-text">{text}</span>
+      </span>
+      <span className="s-tile-go">
+        <Icon name="arrow" size={22} />
+      </span>
+    </a>
+  );
+}
 
 function Home({ offline }: { offline: boolean }) {
   const [ov, setOv] = useState<Overview | null>(null);
@@ -15,33 +40,24 @@ function Home({ offline }: { offline: boolean }) {
 
   return (
     <div className="s-home">
+      {ov && <p className="s-eyebrow">Stock as of {day(ov.as_of)}</p>}
       <h1>What would you like to do?</h1>
       {offline && <div className="s-problem">We can't reach the server right now. Please try again in a minute.</div>}
-      {ov && atRisk > 0 && (
-        <p className="s-lead">
-          ⚠️ {atRisk} product{atRisk > 1 ? 's need' : ' needs'} attention. Making a plan will fix this.
+      {ov && (
+        <p className={`s-status ${atRisk ? 's-status-warn' : 's-status-ok'}`}>
+          <span className="s-status-dot" />
+          {atRisk
+            ? `${atRisk} product${atRisk > 1 ? 's need' : ' needs'} attention. A plan will fix this.`
+            : 'All products look fine.'}
         </p>
       )}
-      <div className="s-tiles">
-        <a className="s-tile s-tile-main" href="#/s/plan">
-          <span className="s-tile-icon">🛒</span>
-          <span className="s-tile-title">Make my plan</span>
-          <span className="s-tile-text">Tell us your budget. We'll tell you what to buy and what to put on sale.</span>
-        </a>
-        <a className="s-tile" href="#/s/message">
-          <span className="s-tile-icon">✉️</span>
-          <span className="s-tile-title">
-            Read a message
-            {ov && ov.pending_signals > 0 && <span className="s-count">{ov.pending_signals}</span>}
-          </span>
-          <span className="s-tile-text">Paste a note from a supplier or your sales team. We'll find what matters.</span>
-        </a>
-        <a className="s-tile" href="#/s/ask">
-          <span className="s-tile-icon">💬</span>
-          <span className="s-tile-title">Ask a question</span>
-          <span className="s-tile-text">Ask in your own words, like “What will run out first?”</span>
-        </a>
-      </div>
+      <nav className="s-tiles">
+        <Tile main href="#/s/plan" icon="cart" title="Make my plan"
+              text="Tell us your budget. We'll say what to buy and what to put on sale." />
+        <Tile href="#/s/message" icon="mail" title="Read a message" badge={ov?.pending_signals}
+              text="Paste a note from a supplier or your sales team." />
+        <Tile href="#/s/ask" icon="chat" title="Ask a question" text="Ask in your own words, like “What will run out first?”" />
+      </nav>
     </div>
   );
 }
@@ -56,7 +72,7 @@ export default function SimpleApp({ screen }: { screen: string }) {
     <div className="simple">
       <header className="s-top">
         <a className="s-brand" href="#/">
-          <span className="logo">⟳</span> Inventory Rescue
+          <span className="s-mark" aria-hidden>IR</span> Inventory Rescue
         </a>
         <a className="s-advanced" href="#/plan" title="Charts, tables and tests for experienced planners">
           Advanced view

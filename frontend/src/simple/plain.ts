@@ -66,15 +66,22 @@ export function actionSteps(a: PlanAction): string[] {
 
 /** The single most useful reason, rewritten in plain words. */
 export function actionWhy(a: PlanAction): string {
-  for (const r of a.reasons) {
-    const so = r.match(/stockout expected from (\d{4}-\d{2}-\d{2})/);
-    if (so) return `Otherwise it runs out around ${day(so[1])}.`;
-  }
-  for (const r of a.reasons) {
-    const ex = r.match(/: (\d+) units expected to expire unsold/);
-    if (ex) return `Otherwise ${count(Number(ex[1]))} units would go to waste.`;
-  }
-  return '';
+  const stockout = () => {
+    for (const r of a.reasons) {
+      const so = r.match(/stockout expected from (\d{4}-\d{2}-\d{2})/);
+      if (so) return `Otherwise it runs out around ${day(so[1])}.`;
+    }
+    return '';
+  };
+  const waste = () => {
+    for (const r of a.reasons) {
+      const ex = r.match(/: (\d+) units expected to expire unsold/);
+      if (ex) return `Otherwise ${count(Number(ex[1]))} units would go to waste.`;
+    }
+    return '';
+  };
+  // A sale is about waste; a purchase is about running out.
+  return a.order_qty > 0 ? stockout() || waste() : waste() || stockout();
 }
 
 /** Safety net for the plain-language prompt: drop record ids the model left in, use ₹. */
@@ -86,4 +93,4 @@ export function tidyAnswer(t: string): string {
     .replace(/(\d)\.0 lakh/g, '$1 lakh');
 }
 
-export const kindIcon = (a: PlanAction) => (a.order_qty > 0 ? (a.expedite ? '🚚' : '🛒') : '🏷️');
+export const kindIcon = (a: PlanAction) => (a.order_qty > 0 ? (a.expedite ? 'truck' : 'cart') : 'tag') as 'truck' | 'cart' | 'tag';

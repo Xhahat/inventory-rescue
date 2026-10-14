@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, waitForJob } from '../api';
 import type { Signal } from '../api';
 import { Back, Problem, Working } from './parts';
+import { Icon } from './icons';
 import { signalSentence } from './plain';
 
 function SignalAsk({
@@ -24,15 +25,17 @@ function SignalAsk({
           <p className="s-question">Is this right?</p>
           <div className="s-row">
             <button className="s-btn s-yes" disabled={busy} onClick={() => onDecide(s, true)}>
-              ✓ Yes, use this
+              <Icon name="check" /> Yes, use this
             </button>
             <button className="s-btn s-no" disabled={busy} onClick={() => onDecide(s, false)}>
-              ✗ No, ignore it
+              <Icon name="x" /> No, ignore it
             </button>
           </div>
         </>
       ) : s.status === 'confirmed' ? (
-        <p className="s-done">✓ Got it. We will use this.</p>
+        <p className="s-done">
+          <Icon name="check" size={20} /> Got it. We will use this.
+        </p>
       ) : (
         <p className="s-muted">Ignored.</p>
       )}
@@ -222,7 +225,7 @@ export default function MessageScreen() {
         <div className="s-next">
           <p>Your numbers are up to date. Make a new plan to use this news.</p>
           <a className="s-btn s-primary" href="#/s/plan">
-            Make a new plan →
+            Make a new plan <Icon name="arrow" size={20} />
           </a>
         </div>
       )}

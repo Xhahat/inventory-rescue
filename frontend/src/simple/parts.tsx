@@ -1,7 +1,9 @@
+import { Icon } from './icons';
+
 export function Back() {
   return (
     <a className="s-back" href="#/">
-      ← Back
+      <Icon name="back" size={20} /> Back
     </a>
   );
 }
