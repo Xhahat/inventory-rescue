@@ -16,19 +16,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    litellm_base_url: str | None = Field(default=None, validation_alias=AliasChoices(
-        "LITELLM_BASE_URL", "LITELLM_URL", "LITELLM_API_BASE", "LLM_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE",
-        "API_BASE_URL", "BASE_URL"))
-    litellm_api_key: str | None = Field(default=None, validation_alias=AliasChoices(
-        "LITELLM_API_KEY", "LITELLM_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "API_KEY"))
-    llm_model: str = Field(default="gpt-5.4-mini", validation_alias=AliasChoices(
-        "LLM_MODEL", "LITELLM_MODEL", "OPENAI_MODEL", "MODEL", "MODEL_NAME"))
     llm_max_concurrency: int = 4
     llm_timeout_seconds: float = 60.0
     llm_disabled: bool = False
     # LLM provider: "auto" (Gemini API when a Google AI Studio key is set, else Vertex AI when a Google Cloud
-    # project is set, else the OpenAI-compatible endpoint), "gemini" (Gemini API, AI Studio key), "vertex" (Gemini
-    # on Vertex AI, Application Default Credentials) or "openai_compatible".
+    # project is set), "gemini" (Gemini API, AI Studio key) or "vertex" (Gemini on Vertex AI, Application Default
+    # Credentials).
     llm_provider: str = "auto"
     gemini_api_key: str | None = Field(default=None, validation_alias=AliasChoices(
         "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_STUDIO_API_KEY", "AI_STUDIO_API_KEY", "GEMINI_KEY"))
@@ -78,11 +71,11 @@ class Settings(BaseSettings):
     @property
     def resolved_llm_provider(self) -> str:
         p = self.llm_provider.strip().lower()
-        if p in ("gemini", "vertex", "openai_compatible"):
+        if p in ("gemini", "vertex"):
             return p
-        if self.gemini_api_key:
+        if self.gemini_api_key or not self.gcp_project:
             return "gemini"
-        return "vertex" if self.gcp_project else "openai_compatible"
+        return "vertex"
 
     @property
     def vertex_model(self) -> str:
@@ -90,18 +83,15 @@ class Settings(BaseSettings):
 
     @property
     def active_llm_model(self) -> str:
-        return self.gemini_model if self.resolved_llm_provider in ("gemini", "vertex") else self.llm_model
+        return self.gemini_model
 
     @property
     def llm_configured(self) -> bool:
         if self.llm_disabled:
             return False
-        p = self.resolved_llm_provider
-        if p == "gemini":
+        if self.resolved_llm_provider == "gemini":
             return bool(self.gemini_api_key)
-        if p == "vertex":
-            return bool(self.gcp_project)
-        return bool(self.litellm_base_url and self.litellm_api_key)
+        return bool(self.gcp_project)
 
     @property
     def var_path(self) -> Path:

@@ -1,7 +1,6 @@
 """LLM adapter behind the `LLMClient` protocol. Default: Gemini through the google-genai SDK, either the Gemini API
 with a Google AI Studio key or Vertex AI with Application Default Credentials (the Cloud Run service account).
-Optional: any OpenAI-compatible endpoint (used for the multi-model comparison). All callers go through
-`run_json_task`, which hashes inputs, parses JSON, validates and returns a log record (callers persist it)."""
+All callers go through `run_json_task`, which hashes inputs, parses JSON, validates and returns a log record (callers persist it)."""
 
 from __future__ import annotations
 
@@ -22,38 +21,6 @@ class LLMClient(Protocol):
     model: str
 
     def complete(self, system: str, user: str) -> str: ...
-
-
-class LiteLLMClient:
-    def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 60.0):
-        from openai import OpenAI
-
-        self.model = model
-        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=1)
-        self._json_mode = True
-        self._temperature = True
-
-    def complete(self, system: str, user: str) -> str:
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        # Some models (e.g. reasoning models) only accept the default temperature or no response_format; each
-        # rejected parameter is dropped once and remembered for this client.
-        while True:
-            kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
-            if self._temperature:
-                kwargs["temperature"] = 0
-            if self._json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            try:
-                resp = self._client.chat.completions.create(**kwargs)
-                return resp.choices[0].message.content or ""
-            except Exception as exc:
-                msg = str(exc).lower()
-                if self._temperature and "temperature" in msg:
-                    self._temperature = False
-                elif self._json_mode and ("response_format" in msg or "json" in msg):
-                    self._json_mode = False
-                else:
-                    raise
 
 
 class _RateLimiter:
@@ -78,7 +45,7 @@ class _RateLimiter:
 class VertexGeminiClient:
     """Gemini via the google-genai SDK: Vertex AI (Application Default Credentials) by default, or the Gemini API
     with a Google AI Studio key (see `GeminiAPIClient`). JSON output is requested natively (response_mime_type);
-    the same validators as every other provider still decide whether the output is used."""
+    the same validators still decide whether the output is used."""
 
     def __init__(self, project: str | None, location: str, model: str, timeout: float = 60.0, client: Any = None,
                  thinking_level: str | None = None, api_key: str | None = None, rpm: int = 0):
@@ -129,10 +96,8 @@ def build_llm(s) -> LLMClient:
     if p == "gemini":
         return GeminiAPIClient(s.gemini_api_key, s.gemini_model, s.llm_timeout_seconds,
                                thinking_level=s.gemini_thinking_level, rpm=s.gemini_rpm)
-    if p == "vertex":
-        return VertexGeminiClient(s.gcp_project, s.gcp_location, s.gemini_model, s.llm_timeout_seconds,
-                                  thinking_level=s.gemini_thinking_level, rpm=s.gemini_rpm)
-    return LiteLLMClient(s.litellm_base_url, s.litellm_api_key, s.llm_model, s.llm_timeout_seconds)
+    return VertexGeminiClient(s.gcp_project, s.gcp_location, s.gemini_model, s.llm_timeout_seconds,
+                              thinking_level=s.gemini_thinking_level, rpm=s.gemini_rpm)
 
 
 _override: LLMClient | None = None

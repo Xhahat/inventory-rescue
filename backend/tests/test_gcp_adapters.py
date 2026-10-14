@@ -19,22 +19,21 @@ def test_provider_resolution(monkeypatch):
     for k in ("GCP_PROJECT", "GOOGLE_CLOUD_PROJECT", "LLM_PROVIDER", "LLM_DISABLED", "GEMINI_API_KEY",
               "GOOGLE_API_KEY", "GEMINI_MODEL", "VERTEX_MODEL", "PROJECT_ID"):
         monkeypatch.delenv(k, raising=False)
-    s = _settings(LITELLM_BASE_URL="http://x", LITELLM_API_KEY="k")
-    assert s.resolved_llm_provider == "openai_compatible" and s.llm_configured
+    s = _settings()
+    assert s.resolved_llm_provider == "gemini" and not s.llm_configured  # nothing set: Gemini API, no key
 
     s = _settings(GOOGLE_CLOUD_PROJECT="demo-proj")
     assert s.resolved_llm_provider == "vertex" and s.llm_configured
     assert s.active_llm_model == "gemini-3.5-flash-lite" and s.gcp_location == "global"
 
     # An AI Studio key wins over a project (no Application Default Credentials needed).
-    s = _settings(GEMINI_API_KEY="k", GOOGLE_CLOUD_PROJECT="demo-proj", LITELLM_BASE_URL="http://x",
-                  LITELLM_API_KEY="k")
+    s = _settings(GEMINI_API_KEY="k", GOOGLE_CLOUD_PROJECT="demo-proj")
     assert s.resolved_llm_provider == "gemini" and s.llm_configured and s.active_llm_model == "gemini-3.5-flash-lite"
     assert _settings(GOOGLE_API_KEY="k", GEMINI_MODEL="gemini-3.8-flash").active_llm_model == "gemini-3.8-flash"
     assert not _settings(llm_provider="gemini").llm_configured  # gemini needs a key
 
-    s = _settings(GOOGLE_CLOUD_PROJECT="demo-proj", llm_provider="openai_compatible")
-    assert s.resolved_llm_provider == "openai_compatible" and not s.llm_configured
+    s = _settings(GOOGLE_CLOUD_PROJECT="demo-proj", llm_provider="gemini")
+    assert s.resolved_llm_provider == "gemini" and not s.llm_configured
 
     s = _settings(llm_provider="vertex")
     assert not s.llm_configured  # vertex needs a project

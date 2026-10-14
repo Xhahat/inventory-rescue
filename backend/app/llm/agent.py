@@ -1,7 +1,5 @@
-"""Provider-agnostic tool calling. A `ToolSession` holds one conversation in the provider's own message format:
-OpenAI-compatible chat.completions (`tools` / `tool_calls` / role "tool") or Gemini, via an AI Studio key or Vertex
-AI (function declarations, automatic function calling disabled, function responses). The assistant loop only sees
-`ModelTurn`s. The `complete()` protocol used by every other task is untouched."""
+"""Gemini tool calling (AI Studio key or Vertex AI): function declarations, automatic function calling disabled,
+function responses. A `ToolSession` holds one conversation; the assistant loop only sees `ModelTurn`s. The `complete()` protocol used by every other task is untouched."""
 
 from __future__ import annotations
 
@@ -9,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from .client import LiteLLMClient, VertexGeminiClient
+from .client import VertexGeminiClient
 
 
 @dataclass
@@ -54,52 +52,6 @@ def _parse_args(raw: Any) -> tuple[dict, str | None]:
     except (TypeError, json.JSONDecodeError) as exc:
         return {}, f"arguments are not valid JSON: {exc}"
     return (obj, None) if isinstance(obj, dict) else ({}, "arguments must be a JSON object")
-
-
-class OpenAIToolSession:
-    """chat.completions with `tools`; tool results go back as role 'tool' messages."""
-
-    def __init__(self, client: Any, model: str, system: str, history: list[dict], tools: list[ToolSpec]):
-        self._client = client
-        self.model = model
-        self._tools = [{"type": "function", "function": {"name": t.name, "description": t.description,
-                                                          "parameters": t.parameters}} for t in tools]
-        self.messages: list[dict] = [{"role": "system", "content": system}] + \
-            [{"role": m["role"], "content": m["content"]} for m in history]
-        self._temperature = True
-
-    def _create(self, **kw):
-        if self._temperature:
-            try:
-                return self._client.chat.completions.create(temperature=0, **kw)
-            except Exception as exc:  # some models only accept the default temperature
-                if "temperature" not in str(exc).lower():
-                    raise
-                self._temperature = False
-        return self._client.chat.completions.create(**kw)
-
-    def step(self, allow_tools: bool = True) -> ModelTurn:
-        resp = self._create(model=self.model, messages=self.messages, tools=self._tools,
-                            tool_choice="auto" if allow_tools else "none")
-        msg = resp.choices[0].message
-        calls = []
-        for tc in (msg.tool_calls or []) if allow_tools else []:
-            args, err = _parse_args(tc.function.arguments)
-            calls.append(ToolCall(tc.id, tc.function.name, args, err))
-        entry: dict = {"role": "assistant", "content": msg.content or ""}
-        if calls:
-            entry["tool_calls"] = [{"id": c.id, "type": "function",
-                                    "function": {"name": c.name, "arguments": json.dumps(c.args)}} for c in calls]
-        self.messages.append(entry)
-        return ModelTurn(msg.content or "", calls)
-
-    def add_tool_results(self, results: list[tuple[ToolCall, dict]]) -> None:
-        for call, res in results:
-            self.messages.append({"role": "tool", "tool_call_id": call.id,
-                                  "content": json.dumps(res, default=str, separators=(",", ":"))})
-
-    def add_user(self, text: str) -> None:
-        self.messages.append({"role": "user", "content": text})
 
 
 class GeminiToolSession:
@@ -165,8 +117,6 @@ def make_tool_session(llm: Any, system: str, history: list[dict], tools: list[To
         return None
     if hasattr(llm, "tool_session"):  # test doubles
         return llm.tool_session(system, history, tools)
-    if isinstance(llm, LiteLLMClient):
-        return OpenAIToolSession(llm._client, llm.model, system, history, tools)
     if isinstance(llm, VertexGeminiClient):  # also GeminiAPIClient (AI Studio key)
         return GeminiToolSession(llm._client, llm._types, llm.model, system, history, tools, config=llm.config,
                                  generate=llm.generate)

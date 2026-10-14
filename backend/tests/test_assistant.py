@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from google.genai import types as gtypes
 
 from app.llm import client as llm_client
-from app.llm.agent import GeminiToolSession, ModelTurn, OpenAIToolSession, ToolCall, ToolSpec, make_tool_session
+from app.llm.agent import GeminiToolSession, ModelTurn, ToolCall, ToolSpec, make_tool_session
 from app.main import app
 from app.models import LLMCall
 from app.services import assistant
@@ -296,43 +296,6 @@ def _spec() -> list[ToolSpec]:
                                                     "required": ["sku_id"]}, lambda sku_id: {"sku_id": sku_id})]
 
 
-class _FakeCompletions:
-    def __init__(self, messages: list):
-        self.queue = list(messages)
-        self.calls: list[dict] = []
-
-    def create(self, **kw):
-        self.calls.append(json.loads(json.dumps(kw)))
-        return SimpleNamespace(choices=[SimpleNamespace(message=self.queue.pop(0))])
-
-
-def test_openai_tool_session_round_trip():
-    tool_msg = SimpleNamespace(content=None, tool_calls=[SimpleNamespace(
-        id="tc1", function=SimpleNamespace(name="get_sku", arguments='{"sku_id": "SKU-015"}'))])
-    comp = _FakeCompletions([tool_msg, SimpleNamespace(content="SKU-015 is fine.", tool_calls=None)])
-    fake = SimpleNamespace(chat=SimpleNamespace(completions=comp))
-    s = OpenAIToolSession(fake, "gpt-test", "SYS", [{"role": "user", "content": "q"}], _spec())
-    t1 = s.step()
-    assert t1.calls[0].name == "get_sku" and t1.calls[0].args == {"sku_id": "SKU-015"} and t1.calls[0].id == "tc1"
-    s.add_tool_results([(t1.calls[0], {"sku_id": "SKU-015"})])
-    t2 = s.step(allow_tools=False)
-    assert t2.text == "SKU-015 is fine." and not t2.calls
-    first, second = comp.calls
-    assert first["temperature"] == 0 and first["tool_choice"] == "auto" and second["tool_choice"] == "none"
-    assert first["tools"][0]["type"] == "function" and first["tools"][0]["function"]["name"] == "get_sku"
-    roles = [m["role"] for m in second["messages"]]
-    assert roles == ["system", "user", "assistant", "tool"]
-    assert second["messages"][2]["tool_calls"][0]["id"] == "tc1" and second["messages"][3]["tool_call_id"] == "tc1"
-
-
-def test_openai_tool_session_bad_json_arguments():
-    msg = SimpleNamespace(content="", tool_calls=[SimpleNamespace(
-        id="tc1", function=SimpleNamespace(name="get_sku", arguments="{not json"))])
-    fake = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions([msg])))
-    t = OpenAIToolSession(fake, "m", "S", [{"role": "user", "content": "q"}], _spec()).step()
-    assert t.calls[0].arg_error and "JSON" in t.calls[0].arg_error
-
-
 class _FakeGenaiModels:
     """Each response is a callable(contents) -> response, so later turns can read the function responses."""
 
@@ -377,8 +340,6 @@ def test_vertex_gemini_tool_session_round_trip(db):
     assert fr.name == "get_sku" and fr.id == "fc-1" and fr.response["sku_id"] == "SKU-015"
 
 
-def test_make_tool_session_for_openai_client():
-    c = llm_client.LiteLLMClient("http://localhost:1", "k", "gpt-test")
-    assert isinstance(make_tool_session(c, "S", [{"role": "user", "content": "q"}], _spec()), OpenAIToolSession)
+def test_make_tool_session_without_tool_support():
     assert make_tool_session(None, "S", [], _spec()) is None
     assert make_tool_session(SimpleNamespace(model="x", complete=lambda s, u: ""), "S", [], _spec()) is None

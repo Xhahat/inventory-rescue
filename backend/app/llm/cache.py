@@ -8,7 +8,7 @@ import json
 import threading
 
 from ..adapters.storage import get_storage
-from .client import LiteLLMClient, LLMClient, VertexGeminiClient, input_hash
+from .client import LLMClient, VertexGeminiClient, input_hash
 
 
 class CachedLLM:
@@ -45,7 +45,7 @@ class CachedLLM:
 
 
 def cached(llm: LLMClient | None, namespace: str = "llm") -> LLMClient | None:
-    """Wrap real provider clients only; injected test doubles stay uncached so each test sees its own handler."""
-    if isinstance(llm, (LiteLLMClient, VertexGeminiClient)):
+    """Wrap real Gemini clients only; injected test doubles stay uncached so each test sees its own handler."""
+    if isinstance(llm, VertexGeminiClient):
         return CachedLLM(llm, namespace)
     return llm

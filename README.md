@@ -51,7 +51,7 @@ All values are simulated, not measured business results. They come from a fresh 
 | Savings vs this baseline (mean, p5–p95) | – | ₹1.84L (₹1.08L–₹2.95L), wins in 100% of worlds | ₹3.78L (₹2.32L–₹5.35L), wins in 100% of worlds |
 | Fill rate / hero fill rate | 0.897 / 0.803 | 0.888 / 0.752 | 0.886 / 0.752 |
 
-The loss is large next to the budget on purpose: ₹10 lakh cannot fix every SKU at risk, so the planner has to choose. Plan generation takes about 6 s and the robustness job under a minute on a laptop. (With `gpt-5.4-mini` forecasts the same plan saved ₹1.94L / ₹3.88L; the gap is within the forecast noise.)
+The loss is large next to the budget on purpose: ₹10 lakh cannot fix every SKU at risk, so the planner has to choose. Plan generation takes about 6 s and the robustness job under a minute on a laptop.
 
 Budget frontier (evaluation world):
 
@@ -102,11 +102,11 @@ Every accepted evidence quote appears verbatim in its message. The validator rej
 
 Value of the signals in a plan: on the 5 demo messages tied to real events, a ₹10 lakh plan built from the LLM-extracted signals cuts the evaluation-world loss from ₹26.59L (no signals) to ₹25.64L, the same as the plan built from hand-labelled (gold) signals: **100% of the perfect-information gain** (₹27.75L → ₹27.50L over 40 worlds, also 100%). Gemini extracted 4 of the 5 gold signals (it missed the second PO in g01); the missing delay does not change the plan.
 
-This metric caught a real bug. The first run on the enterprise data captured **−17%**: every model read "from Oct 15 … for about 10 days" as ending on 25 October, while the planner treats end dates as inclusive (24 October). One extra day of 3× demand on the hero SKU-019 made the budget-tight plan put ₹9.98L into that SKU and starve two others. The extraction prompt now states that dates are inclusive (with an unrelated example), which fixed it for all 10 models. It also shows that a small misread can move a lakh, so signals still need human confirmation.
+This metric caught a real bug. The first run on the enterprise data captured **−17%**: the model read "from Oct 15 … for about 10 days" as ending on 25 October, while the planner treats end dates as inclusive (24 October). One extra day of 3× demand on the hero SKU-019 made the budget-tight plan put ₹9.98L into that SKU and starve two others. The extraction prompt now states that dates are inclusive (with an unrelated example), which fixed it. It also shows that a small misread can move a lakh, so signals still need human confirmation.
 
 Caveats:
 - **The forecasting gain is real but moderate:** 1.5 pp pooled and 1.7 pp on text-only series, measured on 1,050 points of one synthetic brand. Gains of this size need confirming on real sales history.
-- **The extraction gold set is small and written by the developers**, and the prompt was refined after runs on the same set (rules for unknown products, retractions and corrections; then the inclusive-date rule above). Treat it as a regression check, not a benchmark. The date rule cost gpt-5.4-mini one message: it now also invents an event for an unlisted Mango Protein Bar (F1 0.984 → 0.968). Gemini invents no events but drops one paraphrased quote.
+- **The extraction gold set is small and written by the developers**, and the prompt was refined after runs on the same set (rules for unknown products, retractions and corrections; then the inclusive-date rule above). Treat it as a regression check, not a benchmark. Gemini invents no events but drops one paraphrased quote.
 - **Plans are sensitive to the exact signal values** when the budget is tight (see the date bug above). A human should check dates and magnitudes before confirming; editing a signal in place is not built yet.
 - The rolling simulation feeds back realised demand, not censored sales.
 
@@ -114,31 +114,20 @@ Caveats:
 
 On six scripted questions (gemini-3.5-flash-lite), every answer passed the number check, five on the first attempt and one after a single repair, in 3–10 s (median 4.0 s). They cover explaining a SKU decision, an 8 lakh hero-first replan, a supplier slip, expiry markdowns, 10 lakh vs 15 lakh, and a supplier email draft.
 
-### Model comparison
+### Model choice
 
-The same three evaluations ran on `gemini-3.5-flash-lite` through the Gemini API (AI Studio) and on every chat model available on our OpenAI-compatible gateway, on the enterprise dataset (₹10 lakh budget). Calls that failed under load (timeouts, transient gateway errors, free-tier rate limits) were retried, so the table reflects quality, not network luck. Forecast WAPE is shown against the statistical model on the same points; the statistical model alone is 23.0% overall and 23.9% on the 16 text-only series (24.2% on gpt-5.4-mini's 15, because one of its text-only forecasts failed validation). Assistant latency is the median per question, measured one model at a time; it includes tool execution.
+All results above use `gemini-3.5-flash-lite` on the Gemini API (AI Studio):
 
-| Model | Extraction F1 | Messages fully correct | Signal value kept | Forecast WAPE, all / text-only | Hybrid forecasts valid | Assistant: checked (first try) | Assistant latency |
-|---|---|---|---|---|---|---|---|
-| gemini-3.5-flash-lite (default) | 0.966 | 95.0% | 100% | 21.5% / 22.2% | 75/75 | 6/6 (5) | 4.0 s |
-| gpt-5.4-mini | 0.968 | 95.0% | 100% | 21.5% / 21.9% | 74/75 | 6/6 (5) | **3.9 s** |
-| claudesonnet4.5 | **1.000** | **100%** | 100% | **20.9%** / **19.0%** | 75/75 | 5/6 (5) | 10.3 s |
-| gpt-5.1 | 0.983 | 97.5% | 100% | **20.9%** / 19.6% | 75/75 | 6/6 (6) | 11.9 s |
-| gpt-5 | 0.983 | 97.5% | 100% | 21.0% / 19.2% | 73/75 | 6/6 (6) | 30.4 s |
-| qwen3.6-27b | 0.966 | 95.0% | 100% | 21.0% / 20.2% | 74/75 | 6/6 (5) | 8.8 s |
-| gpt-5.6-luna | 0.983 | 97.5% | 100% | 21.2% / 20.3% | 75/75 | 6/6 (6) | 14.8 s |
-| claudeopus5 | 0.983 | 97.5% | 100% | 21.3% / 20.2% | 75/75 | 6/6 (4) | 12.3 s |
-| gpt-5.2 | 0.983 | 97.5% | 100% | 21.3% / 21.2% | 75/75 | 6/6 (6) | 8.4 s |
-| gpt-5.3-chat | 0.983 | 97.5% | 100% | 21.5% / 21.6% | 75/75 | 0/6: gateway rejects tool calls | – |
-| claudesonnet4.6 | 0.983 | 97.5% | 100% | 21.6% / 20.1% | 75/75 | 6/6 (5) | 10.3 s |
+| Task | Gemini result | Non-LLM baseline |
+|---|---|---|
+| Inbox extraction (40 messages) | F1 0.966, 95% of messages fully correct, 0 invented events | Keyword rules: F1 0.65, 57.5% |
+| Signal value in a plan | 100% of the perfect-information gain | – |
+| Forecast WAPE, all / 16 text-only series | 21.5% / 22.2%, 75/75 forecasts valid | Statistical: 23.0% / 23.9% |
+| Planning assistant (6 questions) | 6/6 number-checked (5 first try), median 4.0 s | Labelled tool summary |
 
-What this shows:
-- **Every model beats the statistical forecast**, by 1.4–2.2 pp overall and 1.7–4.9 pp on text-only series. claudesonnet4.5, gpt-5 and gpt-5.1 are the best forecasters; gemini-3.5-flash-lite (1.7 pp) and gpt-5.4-mini (2.3 pp) are the weakest on text-only series.
-- **Extraction is close to saturated on this set.** Every model gets 38–40 of 40 messages right. Most miss g26 ("cartons close to best-before, count pending"), which gives no unit count; the validator rejects an expiry event without a number, so this is partly a validator choice. gpt-5.4-mini is the only model that invents events for products not in the catalogue (2 of 14 no-event messages). qwen also gets the Hindi Diwali-offer message wrong. After the date fix, every model's signals give the same plans as the gold signals.
-- **The assistant works on every model with tool calling.** One claudesonnet4.5 answer fell back to the labelled tool summary. One Gemini answer began with a stray control character; the assistant now strips those before checking.
-- **Speed:** gemini-3.5-flash-lite and gpt-5.4-mini are 2–8× faster than the rest. Flash-lite is the default because it is fast, is within one message of the larger models on extraction, passes every assistant check, and runs on Google's own API. A split is possible: a fast model for the assistant and extraction, a stronger one for the overnight forecast batch.
-- **Gateway quirks:** gpt-5, gpt-5.6-luna and claudeopus5 reject `temperature=0`; the client drops a rejected parameter and retries. gpt-5.3-chat is routed to a deployment that refuses tool calls on chat completions, so the assistant falls back to its labelled tool summary.
-- **Larger Gemini models are not measured yet.** On the AI Studio free tier, gemini-3.8-flash allows 20 requests a day (one evaluation run needs about 130) and was overloaded (HTTP 503) when tried; flash-lite allows 15 a minute, so its run used `GEMINI_RPM=14`. With billing enabled, set `GEMINI_MODEL` and rerun.
+- **Why flash-lite:** it is fast (median 4 s per assistant answer, including tool execution), passes every assistant check, and fits the AI Studio free tier (15 requests a minute; the evaluation runs used `GEMINI_RPM=14`).
+- **Larger Gemini models are not measured yet.** On the free tier, gemini-3.8-flash allows 20 requests a day (one evaluation run needs about 130) and was overloaded (HTTP 503) when tried. With billing enabled, set `GEMINI_MODEL` and rerun. A split is possible: flash-lite for the assistant and extraction, a larger Gemini model for the overnight forecast batch.
+- One Gemini answer began with a stray control character; the assistant now strips those before checking.
 - With 40 messages, 75 forecasts and 6 questions, gaps of one or two messages, or under about 0.5 pp WAPE, are within noise.
 
 ## Architecture
@@ -148,7 +137,7 @@ frontend/  React + TypeScript + Vite + Recharts (Simple view: #/ #/s/plan #/s/me
 backend/   FastAPI + SQLAlchemy 2 (SQLite locally, PostgreSQL 16 / Cloud SQL on Google Cloud)
   app/api/routes.py        HTTP API (also serves the built frontend when STATIC_DIR exists)
   app/api/assistant_routes.py, eval_routes.py   planning assistant and extraction-evaluation endpoints
-  app/llm/                 Gemini clients (AI Studio key or Vertex AI) and an optional OpenAI-compatible client, prompts, JSON-task runner with validation, tool-calling agent
+  app/llm/                 Gemini clients (AI Studio key or Vertex AI), prompts, JSON-task runner with validation, tool-calling agent
   app/services/            signals, forecasting, simulator, planner, value, rolling re-plan and plan options, scenarios, plans/jobs, assistant tools, extraction eval
   app/adapters/            storage (local folder or Cloud Storage), search, analytics
   scripts/seed.py          synthetic data generator and loader
@@ -173,7 +162,7 @@ Each external service sits behind an adapter selected by configuration:
 
 ## Setup
 
-Prerequisites: Python 3.12, Node 20+ and a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey). No database server or Docker is needed locally: the app creates a SQLite file under `var/`.
+Prerequisites: Python 3.12, Node 20+ and a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey). No database server is needed locally: the app creates a SQLite file under `var/`.
 
 ```powershell
 # 1. Backend
@@ -195,10 +184,9 @@ Settings are read from environment variables, or from `.env` / `env/.env` at the
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model id (also `VERTEX_MODEL`). `gemini-3.8-flash` needs a billing-enabled key: its free tier allows 20 requests a day. |
 | `GEMINI_THINKING_LEVEL` | `low` | `low`, `medium` or `high`; empty uses the model default. |
 | `GEMINI_RPM` | `0` | Client-side cap on requests per minute (0 = none). Use `14` on the AI Studio free tier (15 RPM). 429 and 5xx responses are retried with backoff either way. |
-| `LLM_PROVIDER` | `auto` | `gemini`, `vertex`, `openai_compatible`, or `auto`: the Gemini API when a key is set, else Vertex AI when a project is set, else the OpenAI-compatible endpoint. |
+| `LLM_PROVIDER` | `auto` | `gemini`, `vertex`, or `auto`: the Gemini API when a key is set, else Vertex AI when a project is set. |
 | `GOOGLE_CLOUD_PROJECT` | – | Also `GCP_PROJECT`. Used by the Vertex AI provider (Application Default Credentials). |
 | `GCP_LOCATION` | `global` | Vertex AI location. |
-| `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `LLM_MODEL` | – / – / `gpt-5.4-mini` | Optional OpenAI-compatible endpoint, used for the multi-model comparison. |
 | `LLM_DISABLED` | `false` | Set to `true` to force the labelled fallbacks everywhere. |
 | `DATABASE_URL` | `sqlite:///var/inventory_rescue.db` | SQLAlchemy URL. Cloud SQL: `postgresql+psycopg://USER:PASS@/DB?host=/cloudsql/PROJECT:REGION:INSTANCE`. |
 | `STORAGE_BACKEND` | `local` | `gcs` stores files in `GCS_BUCKET` (optional `GCS_PREFIX`). |

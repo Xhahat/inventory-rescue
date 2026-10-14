@@ -1,5 +1,5 @@
 # Single Cloud Run service: FastAPI serves /api and the built React app from the same origin.
-# Build:  docker build -t inventory-rescue .        (or: gcloud builds submit --config cloudbuild.yaml)
+# Build:  gcloud builds submit --config cloudbuild.yaml   (Cloud Build -> Artifact Registry -> Cloud Run)
 
 FROM node:22-slim AS web
 WORKDIR /web
