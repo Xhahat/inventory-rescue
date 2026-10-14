@@ -93,6 +93,24 @@ def test_plan_core_builds_four_options(world):
         plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="yolo")
 
 
+def test_reserve_share_is_chosen_per_plan(world, seeded_db):
+    snap, ctxs, pw, ew = world
+    _, _, _, summary = plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="reserve", reserve_share=0.5)
+    opts = {o["key"]: o for o in summary["options"]}
+    assert summary["reserve_share"] == 0.5
+    assert opts["reserve"]["cash_committed"] <= 500_000 + 1e-6
+    assert summary["cash_used"] == pytest.approx(opts["reserve"]["cash_committed"], abs=0.05)
+    with pytest.raises(ValueError):
+        plans._plan_core(snap, ctxs, pw, ew, 1_000_000.0, strategy="reserve", reserve_share=1.0)
+    with TestClient(app) as client:
+        assert client.post("/api/plans", json={"budget": 1_000_000, "reserve_share": 0.95}).status_code == 422
+        plan = client.post("/api/plans", json={"budget": 1_000_000, "strategy": "reserve",
+                                               "reserve_share": 0.4}).json()
+        assert plan["summary"]["reserve_share"] == 0.4 and plan["summary"]["cash_used"] <= 600_000 + 1e-6
+        default = client.post("/api/plans", json={"budget": 1_000_000}).json()
+        assert default["summary"]["reserve_share"] == get_settings().reserve_share
+
+
 def test_plan_once_follows_schedule_and_replan_releases_it(world):
     snap, ctxs, pw, ew = world
     stag = solve_menu(_menu(ctxs, pw), 1_000_000, stagger=True, capital_rate=0.18)

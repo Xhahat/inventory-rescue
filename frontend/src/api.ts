@@ -99,7 +99,7 @@ export type Plan = {
   baseline_actions: { sku_id: string; kind: string; order_qty: number; cash_outlay: number }[];
   summary: {
     budget: number; cash_used: number; cash_remaining: number; expected_loss_no_action: number;
-    strategy?: Strategy; strategy_label?: string; cash_today?: number; cash_scheduled?: number;
+    strategy?: Strategy; strategy_label?: string; cash_today?: number; cash_scheduled?: number; reserve_share?: number;
     options?: PlanOption[];
     expected_loss_plan: number; n_actions: number; skus_at_risk: number;
     forecast_methods: Record<string, number>;
@@ -264,7 +264,8 @@ export const api = {
       throw e;
     }
   },
-  createPlan: (budget: number, strategy: Strategy = 'commit_now') => post<Plan>('/api/plans', { budget, strategy }),
+  createPlan: (budget: number, strategy: Strategy = 'commit_now', reserveShare?: number) =>
+    post<Plan>('/api/plans', { budget, strategy, ...(reserveShare === undefined ? {} : { reserve_share: reserveShare }) }),
   approvePlan: (id: number) => post<Plan>(`/api/plans/${id}/approve`),
   plan: (id: number) => req<Plan>(`/api/plans/${id}`),
   overridePlan: (id: number, items: OverrideItem[]) => post<Plan>(`/api/plans/${id}/overrides`, { items }),

@@ -17,6 +17,8 @@ class DecisionIn(BaseModel):
 class PlanIn(BaseModel):
     budget: float | None = Field(None, ge=0, le=10_000_000)
     strategy: Literal["commit_now", "staggered", "reserve", "lean"] = "commit_now"
+    # Share of the budget the "reserve" option keeps back on day 0; defaults to the configured reserve_share.
+    reserve_share: float | None = Field(None, ge=0.05, le=0.9)
 
 
 class ScenarioIn(BaseModel):

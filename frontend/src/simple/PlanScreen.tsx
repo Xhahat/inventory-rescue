@@ -8,7 +8,7 @@ import { actionSteps, actionWhy, kindIcon, rupees } from './plain';
 const CHOICES: { key: Strategy; title: string; text: string }[] = [
   { key: 'commit_now', title: 'Buy it all now', text: 'Everything is ordered today. The simplest choice.' },
   { key: 'staggered', title: 'Buy in two steps', text: 'Order part now, the rest in 1–2 weeks only if it is still needed.' },
-  { key: 'reserve', title: 'Keep money aside', text: 'Spend about 70% now and keep the rest for surprises.' },
+  { key: 'reserve', title: 'Keep money aside', text: 'Spend part now and keep the rest for surprises. You choose how much.' },
   { key: 'lean', title: 'Spend less', text: 'Spend only what gives most of the savings.' },
 ];
 
@@ -27,6 +27,7 @@ export default function PlanScreen() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [budget, setBudget] = useState('');
   const [choice, setChoice] = useState<Strategy>('commit_now');
+  const [keepPct, setKeepPct] = useState(30);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<'' | 'plan' | 'approve'>('');
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +39,7 @@ export default function PlanScreen() {
         setPlan(p);
         setBudget(Math.round(p?.budget ?? o.default_budget).toLocaleString('en-IN'));
         if (p?.summary.strategy) setChoice(p.summary.strategy);
+        if (p?.summary.reserve_share) setKeepPct(Math.round(p.summary.reserve_share * 100));
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoaded(true));
@@ -69,7 +71,7 @@ export default function PlanScreen() {
     setBusy('plan');
     setError(null);
     try {
-      setPlan(await api.createPlan(b, strategy));
+      setPlan(await api.createPlan(b, strategy, keepPct / 100));
       setOverview(await api.overview());
     } catch (e) {
       setError((e as Error).message);
@@ -104,7 +106,11 @@ export default function PlanScreen() {
   const aside = plan && s ? plan.budget - s.cash_used : 0;
   // Per-choice figures are only meaningful when they were computed for the budget typed now.
   const sameBudget = plan && Math.round(plan.budget) === digits(budget);
-  const optionRow = (k: Strategy) => (sameBudget ? s?.options?.find((o) => o.key === k) : undefined);
+  const sameKeep = Math.round((s?.reserve_share ?? 0.3) * 100) === keepPct;
+  const optionRow = (k: Strategy) =>
+    sameBudget && (k !== 'reserve' || sameKeep) ? s?.options?.find((o) => o.key === k) : undefined;
+  const b = digits(budget);
+  const keepAmount = Math.round((b * keepPct) / 100);
   const safest = sameBudget ? best : undefined;
 
   return (
@@ -155,6 +161,11 @@ export default function PlanScreen() {
                 {safest === c.key && <span className="s-badge">Safest in our tests</span>}
               </span>
               <span className="s-choice-text">{c.text}</span>
+              {!row && c.key === 'reserve' && b > 0 && (
+                <span className="s-choice-figure">
+                  Up to {short(b - keepAmount)} now · {short(keepAmount)} kept
+                </span>
+              )}
               {row && (
                 <span className="s-choice-figure">
                   {short(row.cash_today)} now
@@ -165,6 +176,32 @@ export default function PlanScreen() {
             </label>
           );
         })}
+        {choice === 'reserve' && (
+          <div className="s-keep">
+            <label htmlFor="s-keep-range" className="s-keep-label">
+              How much do you want to keep aside?
+            </label>
+            <div className="s-keep-row">
+              <input
+                id="s-keep-range"
+                type="range"
+                min={10}
+                max={70}
+                step={5}
+                value={keepPct}
+                onChange={(e) => setKeepPct(Number(e.target.value))}
+                aria-valuetext={`${keepPct} percent`}
+              />
+              <span className="s-keep-pct">{keepPct}%</span>
+            </div>
+            {b > 0 && (
+              <p className="s-keep-sum">
+                Spend up to <strong>{rupees(b - keepAmount)}</strong> now. Keep <strong>{rupees(keepAmount)}</strong>{' '}
+                for surprises.
+              </p>
+            )}
+          </div>
+        )}
       </fieldset>
 
       <button className="s-btn s-primary s-wide" onClick={() => make()} disabled={!!busy}>

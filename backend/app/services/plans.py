@@ -155,13 +155,13 @@ def _frontier(ctxs, menu, ew: World, budget: float) -> list[dict]:
     return rows
 
 
-def _solve_strategy(menu, budget: float, strategy: str):
+def _solve_strategy(menu, budget: float, strategy: str, reserve_share: float):
     """Solve the menu for one plan option. Returns (result, operating budget for the rest of the month)."""
     s = get_settings()
     if strategy == "staggered":
         return solve_menu(menu, budget, stagger=True, capital_rate=s.working_capital_rate), budget
     if strategy == "reserve":
-        return solve_menu(menu, budget * (1 - s.reserve_share)), budget
+        return solve_menu(menu, budget * (1 - reserve_share)), budget
     full = solve_menu(menu, budget)
     if strategy == "lean":
         def obj(r):
@@ -176,11 +176,12 @@ def _solve_strategy(menu, budget: float, strategy: str):
     return full, budget
 
 
-def _options(ctxs, menu, ew: World, budget: float, current: str) -> tuple[dict, list[dict]]:
+def _options(ctxs, menu, ew: World, budget: float, current: str,
+             reserve_share: float) -> tuple[dict, list[dict]]:
     s = get_settings()
     results, rows = {}, []
     for key, (label, desc) in STRATEGIES.items():
-        r, op_budget = _solve_strategy(menu, budget, key)
+        r, op_budget = _solve_strategy(menu, budget, key, reserve_share)
         results[key] = (r, op_budget)
         ev = value.evaluate_actions(ctxs, r.actions, ew)
         h = s.horizon_days
@@ -205,14 +206,18 @@ def _options(ctxs, menu, ew: World, budget: float, current: str) -> tuple[dict, 
 
 
 def _plan_core(snap, ctxs: list[SkuContext], pw: World, ew: World, budget: float,
-               actions: list[Action] | None = None, strategy: str = "commit_now"):
+               actions: list[Action] | None = None, strategy: str = "commit_now",
+               reserve_share: float | None = None):
     """Optimise (or, with `actions`, score operator-overridden decisions) and build the scorecard."""
     s = get_settings()
     z = s.service_level_z
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy {strategy!r}")
+    reserve_share = s.reserve_share if reserve_share is None else float(reserve_share)
+    if not 0.0 <= reserve_share < 1.0:
+        raise ValueError(f"reserve_share must be in [0, 1), got {reserve_share}")
     menu = prepare_menu(ctxs, pw, sorted({budget * m for m in FRONTIER_MULTIPLES} | {budget}), z, stagger=True)
-    opt_results, options = _options(ctxs, menu, ew, budget, strategy)
+    opt_results, options = _options(ctxs, menu, ew, budget, strategy, reserve_share)
     result = opt_results[strategy][0] if actions is None else score_actions(ctxs, pw, actions, z, budget)
     base = baseline_actions(ctxs, budget)
     tuned, tuned_info = tuned_baseline(ctxs, pw, budget)
@@ -242,6 +247,7 @@ def _plan_core(snap, ctxs: list[SkuContext], pw: World, ew: World, budget: float
         "budget": round(budget, 2),
         "strategy": strategy,
         "strategy_label": STRATEGIES[strategy][0],
+        "reserve_share": round(reserve_share, 4),
         "cash_used": round(result.cash_used, 2),
         "cash_today": round(result.cash_today, 2),
         "cash_scheduled": round(result.cash_used - result.cash_today, 2),
@@ -308,14 +314,16 @@ def plan_diff(prev: Plan | None, rows: list[dict], summary: dict) -> dict | None
     }
 
 
-def create_plan(db: Session, budget: float | None = None, strategy: str = "commit_now") -> Plan:
+def create_plan(db: Session, budget: float | None = None, strategy: str = "commit_now",
+                reserve_share: float | None = None) -> Plan:
     s = get_settings()
     budget = float(s.default_budget_inr if budget is None else budget)
     snap = state.load_snapshot(db)
     ctxs = state.build_contexts(snap)
     pw = state.planning_world(snap, ctxs)
     ew = state.evaluation_world(snap, ctxs)
-    result, base, rows, summary = _plan_core(snap, ctxs, pw, ew, budget, strategy=strategy)
+    result, base, rows, summary = _plan_core(snap, ctxs, pw, ew, budget, strategy=strategy,
+                                             reserve_share=reserve_share)
     prev = db.scalars(select(Plan).order_by(Plan.id.desc()).limit(1)).first()
     summary["diff"] = plan_diff(prev, rows, summary)
     summary["revision"] = 0
@@ -408,7 +416,8 @@ def apply_overrides(db: Session, plan: Plan, overrides: list[dict]) -> Plan:
     pw = state.planning_world(snap, ctxs)
     ew = state.evaluation_world(snap, ctxs)
     _, _, rows, summary = _plan_core(snap, ctxs, pw, ew, plan.budget, actions,
-                                     strategy=(plan.summary or {}).get("strategy", "commit_now"))
+                                     strategy=(plan.summary or {}).get("strategy", "commit_now"),
+                                     reserve_share=(plan.summary or {}).get("reserve_share"))
     old_summary = plan.summary or {}
     removed_before = {x["sku_id"]: x["original"] for x in old_summary.get("overridden_removed", [])}
     for r in rows:

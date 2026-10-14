@@ -205,7 +205,7 @@ Settings are read from environment variables, or from `.env` / `env/.env` at the
 | `STATIC_DIR` | `frontend/dist` | Built UI served by FastAPI when present. |
 | `EVAL_WORLDS` / `ROLLING_WORLDS` | `120` / `20` | Monte Carlo worlds for the robustness job. |
 | `OPTION_WORLDS` | `10` | Calm worlds for the plan-options comparison (the same number of shock worlds is added). |
-| `WORKING_CAPITAL_RATE` / `RESERVE_SHARE` / `LEAN_SAVINGS_SHARE` | `0.18` / `0.3` / `0.9` | Plan-option settings: annual cost of cash, share held back by "keep a reserve", share of savings "lean" must keep. |
+| `WORKING_CAPITAL_RATE` / `RESERVE_SHARE` / `LEAN_SAVINGS_SHARE` | `0.18` / `0.3` / `0.9` | Plan-option settings: annual cost of cash, share held back by "keep a reserve" (default; `POST /api/plans` accepts `reserve_share` 0.05–0.9 per plan), share of savings "lean" must keep. |
 
 Without LLM credentials the app still works end to end, using statistical and template fallbacks that are clearly labelled.
 
@@ -269,7 +269,7 @@ Local container check: `docker build -t inventory-rescue . && docker run -p 8080
 
 **Simple view (2 minutes).** Open the app root.
 1. Click **Read a message**, then **Show me an example**, then **Read it**. Answer **Yes, use this** to the plain-language event and wait for "Your numbers are up to date".
-2. Next to the budget, choose how to buy: **Buy it all now**, **Buy in two steps** (part now, the rest at the weekly check only if still needed), **Keep money aside** (about 70% now) or **Spend less**. Each choice shows how much is paid now, later or kept, and the safest choice in the stress test is marked. Click **Make a new plan**: it shows the amount to spend, the saving compared with the usual reordering, and one card per product. Click **Approve and get my order list** to download the CSVs.
+2. Next to the budget, choose how to buy: **Buy it all now**, **Buy in two steps** (part now, the rest at the weekly check only if still needed), **Keep money aside** (a slider sets how much to keep, 10–70%; sent as `reserve_share`) or **Spend less**. Each choice shows how much is paid now, later or kept, and the safest choice in the stress test is marked. Click **Make a new plan**: it shows the amount to spend, the saving compared with the usual reordering, and one card per product. Click **Approve and get my order list** to download the CSVs.
 3. Click **← Back**, then **Ask a question**, and tap "Which products will run out first?".
 
 **Advanced view.** Click **Advanced view** at the top right.
