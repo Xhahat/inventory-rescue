@@ -24,21 +24,23 @@ def compute_alerts(ctxs: list[SkuContext], world: World, as_of: date) -> list[di
         p50 = next((p for w, p in sw.demand_paths if w >= 0.5), sw.demand_paths[0][1])
         mid = replace(sw, demand_paths=[(1.0, p50)], supply_cases=[])  # median demand, nominal (P80) supply
         o = evaluate(ctx, defer(ctx), mid)
+        # Stockout dates use the full planning world (forecast range and supplier-delay cases), like the plan.
+        full = evaluate(ctx, defer(ctx), sw)
+        so = full.first_stockout_day
         arrivals = sorted(i.arrival_day for i in sw.open_inbound if i.arrival_day is not None)
-        if o.first_stockout_day is not None:
-            next_arrival = next((a for a in arrivals if a > o.first_stockout_day), None)
-            before = next((a for a in arrivals if a <= o.first_stockout_day), None)
-            if before is None or next_arrival is not None or not arrivals:
-                lt = sw.standard_arrival_day
-                sev = "high" if lt is None or o.first_stockout_day < lt else "medium"
-                out.append({
-                    "entity_id": ctx.sku_id, "alert_type": "stockout_before_arrival", "severity": sev,
-                    "message": f"{ctx.name}: stockout expected {as_of + timedelta(days=o.first_stockout_day)}"
-                               + (f", next inbound {as_of + timedelta(days=next_arrival)}" if next_arrival is not None
-                                  else ", no inbound scheduled"),
-                    "details": {"first_stockout_day": o.first_stockout_day, "next_arrival_day": next_arrival,
-                                "units_short": round(o.units_short, 1), "lead_time_days": lt},
-                })
+        if so is not None:
+            # Any run-out counts, including one after an earlier open PO has already arrived.
+            next_arrival = next((a for a in arrivals if a > so), None)
+            lt = sw.standard_arrival_day
+            sev = "high" if lt is None or so < lt else "medium"
+            out.append({
+                "entity_id": ctx.sku_id, "alert_type": "stockout_before_arrival", "severity": sev,
+                "message": f"{ctx.name}: stockout expected {as_of + timedelta(days=so)}"
+                           + (f", next inbound {as_of + timedelta(days=next_arrival)}" if next_arrival is not None
+                              else ", no inbound scheduled"),
+                "details": {"first_stockout_day": so, "next_arrival_day": next_arrival,
+                            "units_short": round(full.units_short, 1), "lead_time_days": lt},
+            })
         lot_ids = {l.lot_id for l in ctx.lots}
         risky = {k: round(v, 1) for k, v in o.expired_by_lot.items() if k in lot_ids and v > 0.5}
         if risky:

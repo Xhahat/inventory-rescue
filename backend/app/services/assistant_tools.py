@@ -643,6 +643,35 @@ def list_alerts(tc: ToolContext, alert_type: str | None = None) -> dict:
             "alert_types": ["stockout_before_arrival", "expiry", "overstock", "supplier_reliability"]}
 
 
+def list_stockouts(tc: ToolContext) -> dict:
+    """Run-out dates from the planning world, i.e. the same numbers the plan screen shows, earliest first."""
+    rows = []
+    for c in tc.ctxs:
+        sw = tc.pw.skus[c.sku_id]
+        d = evaluate(c, defer(c), sw)
+        if d.first_stockout_day is None:
+            continue
+        a = tc.plan_actions[c.sku_id]
+        p = d if a.kind == "defer" else evaluate(c, a, sw)
+        arrivals = sorted(i.arrival_day for i in sw.open_inbound if i.arrival_day is not None)
+        rows.append((d.first_stockout_day, {
+            "sku_id": c.sku_id, "name": c.name, "priority": c.priority,
+            "run_out_date_without_action": tc.day(d.first_stockout_day),
+            "units_short_without_action": round(d.units_short),
+            "next_open_po_arrival_date": tc.day(next((x for x in arrivals if x > d.first_stockout_day), None)),
+            "plan_action": _describe(a),
+            **({"new_order_arrival_date": tc.day(sw.expedite_arrival_day if a.expedite else sw.standard_arrival_day)}
+               if a.order_qty else {}),
+            "run_out_date_with_plan": tc.day(p.first_stockout_day),
+            "units_short_with_plan": round(p.units_short)}))
+    rows.sort(key=lambda x: (x[0], x[1]["sku_id"]))
+    return {**tc.plan_meta(), "as_of": tc.snap.as_of.isoformat(), "count": len(rows),
+            "how_to_read": "Sorted by run-out date without action (the first day stock is likely to run out across "
+                           "the forecast range and supplier-delay cases; the plan screen shows the same date). "
+                           "run_out_date_with_plan null = the plan covers it.",
+            "stockouts": [r for _, r in rows[:20]]}
+
+
 SIGNAL_STATUSES = ("pending", "confirmed", "rejected", "invalid")
 
 
@@ -779,6 +808,10 @@ def build_tools(tc: ToolContext) -> list[ToolSpec]:
                        "end_day": {"type": "integer", "description": "end day, exclusive (1-30)"},
                        "budget": {"type": "number", "description": "budget for the adapted plan (default: plan budget)"}}),
                  bind(run_scenario)),
+        ToolSpec("list_stockouts",
+                 "Which products will run out and when, earliest first: run-out date and units short without action "
+                 "and with the current plan, next open PO arrival, the plan's action. Same dates as the plan screen. "
+                 "Use it for 'what runs out first' / 'when will X run out'.", _obj({}), bind(list_stockouts)),
         ToolSpec("list_alerts", "Active alerts: stockout before arrival, expiry risk (lots and write-off), overstock, "
                  "supplier reliability.",
                  _obj({"alert_type": {"type": "string", "enum": ["stockout_before_arrival", "expiry", "overstock",
@@ -844,6 +877,9 @@ def summarize(name: str, r: dict) -> str:
             ev = r["evaluation_world"]
             return (f"current plan loss in scenario {_inr(ev['current_plan_in_scenario']['total_loss'])}, adapted plan "
                     f"{_inr(ev['adapted_plan_in_scenario']['total_loss'])}; {r['n_changed_skus']} SKUs change")
+        if name == "list_stockouts":
+            return f"{r['count']} products run out without action, earliest first: " + "; ".join(
+                f"{s['name']} {s['run_out_date_without_action']}" for s in r["stockouts"][:6])
         if name == "list_alerts":
             return f"{r['count']} active alerts: " + "; ".join(f"{a['alert_type']} {a['entity_id']}"
                                                                for a in r["alerts"][:6])

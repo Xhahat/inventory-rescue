@@ -114,6 +114,29 @@ def test_clean_history_caps_and_requires_user_last():
 
 # ---------------------------------------------------------------- tools and dispatch
 
+def test_list_stockouts_matches_planner_and_alerts(db):
+    from app.services import alerts as alerts_svc
+    from app.services.world import defer, evaluate
+
+    tc = at.ToolContext(db)
+    tools = {t.name: t for t in at.build_tools(tc)}
+    r = assistant._dispatch(tools, _call("list_stockouts"))
+    rows = r["stockouts"]
+    assert rows and r["count"] >= len(rows)
+    dates = [x["run_out_date_without_action"] for x in rows]
+    assert dates == sorted(dates)  # earliest first
+    for x in rows:  # same date as the planner's no-action outcome (what the plan screen shows)
+        c = tc.by_id[x["sku_id"]]
+        assert x["run_out_date_without_action"] == tc.day(evaluate(c, defer(c), tc.pw.skus[c.sku_id]).first_stockout_day)
+    warned = {a["entity_id"]: a["details"]["first_stockout_day"]
+              for a in alerts_svc.compute_alerts(tc.ctxs, tc.pw, tc.snap.as_of)
+              if a["alert_type"] == "stockout_before_arrival"}
+    assert {x["sku_id"]: x["run_out_date_without_action"] for x in rows} == \
+        {k: tc.day(v) for k, v in warned.items() if k in {x["sku_id"] for x in rows}}
+    assert set(warned) == {x["sku_id"] for x in rows} or r["count"] > len(rows)
+    assert at.summarize("list_stockouts", r).startswith(f"{r['count']} products run out")
+
+
 def test_tools_validate_arguments(db):
     tc = at.ToolContext(db)
     tools = {t.name: t for t in at.build_tools(tc)}
