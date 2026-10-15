@@ -245,7 +245,7 @@ The script is idempotent. It does the following:
 1. Enables the required APIs.
 2. Creates an Artifact Registry repo, a runtime service account (Vertex AI user, Cloud SQL client) and a private Cloud Storage bucket.
 3. Creates a Cloud SQL PostgreSQL 16 instance, database and user. The generated `DATABASE_URL` goes into Secret Manager.
-4. Builds the image with Cloud Build.
+4. Gives the default Cloud Build service account the Cloud Build builder role (needed where the organization disables automatic grants to default service accounts), then builds the image with Cloud Build. `.gcloudignore` keeps secrets, local data and dependencies out of the upload.
 5. Deploys the Cloud Run service (region `asia-south1` by default) with `STORAGE_BACKEND=gcs`. With `GEMINI_API_KEY` set, the key goes into Secret Manager and the service uses the Gemini API (`LLM_PROVIDER=gemini`); otherwise it uses Gemini on Vertex AI through its service account (`LLM_PROVIDER=vertex`).
 6. Creates and runs the `inventory-rescue-seed` Cloud Run job to load the demo data.
 

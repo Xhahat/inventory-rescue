@@ -107,6 +107,14 @@ fi
 unset GEMINI_API_KEY
 
 say "Building image ${IMAGE}:${TAG} with Cloud Build"
+# New projects build as the Compute Engine default service account; where the organization disables automatic
+# grants for default service accounts it has no roles, so give it the Cloud Build builder role.
+BUILD_SA="$(gcloud builds get-default-service-account --format 'value(serviceAccountEmail)' 2>/dev/null |
+  sed 's#^projects/[^/]*/serviceAccounts/##')"
+if [[ -n "$BUILD_SA" ]]; then
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" --member "serviceAccount:${BUILD_SA}" \
+    --role roles/cloudbuild.builds.builder --condition None >/dev/null
+fi
 gcloud builds submit --tag "${IMAGE}:${TAG}" .
 
 ENV_VARS="${LLM_ENV},GEMINI_MODEL=${GEMINI_MODEL}"

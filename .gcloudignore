@@ -1,0 +1,20 @@
+# Files never uploaded to Cloud Build (gcloud builds submit).
+.gcloudignore
+.git
+.gitignore
+.venv/
+.vscode/
+.idea/
+.env
+*.env
+env/
+var/
+docs/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+backend/tests/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+plan.md
