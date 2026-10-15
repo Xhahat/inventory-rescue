@@ -20,7 +20,9 @@ REGION="${REGION:-asia-south1}"
 SERVICE="${SERVICE:-inventory-rescue}"
 REPO="${REPO:-inventory-rescue}"
 SQL_INSTANCE="${SQL_INSTANCE:-inventory-rescue-pg}"
-SQL_TIER="${SQL_TIER:-db-g1-small}"
+SQL_TIER="${SQL_TIER:-db-f1-micro}"          # smallest shared-core tier; use db-g1-small or larger for real load
+MIN_INSTANCES="${MIN_INSTANCES:-0}"         # 0 = scale to zero when idle (first request after idle takes a few seconds)
+MAX_INSTANCES="${MAX_INSTANCES:-2}"
 DB_NAME="${DB_NAME:-inventory_rescue}"
 DB_USER="${DB_USER:-app}"
 BUCKET="${BUCKET:-${PROJECT_ID}-inventory-rescue}"
@@ -68,7 +70,7 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" --member "service
 say "Cloud SQL for PostgreSQL 16: ${SQL_INSTANCE} (first creation takes several minutes)"
 gcloud sql instances describe "$SQL_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql instances create "$SQL_INSTANCE" --database-version POSTGRES_16 --edition enterprise \
-    --tier "$SQL_TIER" --region "$REGION" --storage-auto-increase
+    --tier "$SQL_TIER" --region "$REGION" --storage-size 10 --storage-auto-increase
 gcloud sql databases describe "$DB_NAME" --instance "$SQL_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create "$DB_NAME" --instance "$SQL_INSTANCE"
 
@@ -113,11 +115,12 @@ ENV_VARS="${ENV_VARS},STORAGE_BACKEND=gcs,GCS_BUCKET=${BUCKET}"
 if [[ "$PUBLIC" == "1" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
 
 say "Deploying Cloud Run service: ${SERVICE}"
-# --no-cpu-throttling + min 1 instance: plan robustness evaluation and forecast refresh run as background work
-# after the HTTP response returns, so the CPU must stay allocated.
+# --no-cpu-throttling: plan robustness evaluation and forecast refresh run as background work after the HTTP
+# response returns, so the CPU must stay allocated while an instance is up. MIN_INSTANCES=1 keeps one warm.
 gcloud run deploy "$SERVICE" --image "${IMAGE}:${TAG}" --region "$REGION" --service-account "$SA" \
   --set-cloudsql-instances "$CONN" --set-secrets "$SECRETS" \
-  --set-env-vars "$ENV_VARS" --cpu 2 --memory 2Gi --no-cpu-throttling --min-instances 1 --max-instances 3 \
+  --set-env-vars "$ENV_VARS" --cpu 2 --memory 2Gi --no-cpu-throttling \
+  --min-instances "$MIN_INSTANCES" --max-instances "$MAX_INSTANCES" \
   --concurrency 40 --timeout 300 "$AUTH_FLAG" --quiet
 
 say "Seed job: ${SERVICE}-seed"

@@ -249,7 +249,7 @@ The script is idempotent. It does the following:
 5. Deploys the Cloud Run service (region `asia-south1` by default) with `STORAGE_BACKEND=gcs`. With `GEMINI_API_KEY` set, the key goes into Secret Manager and the service uses the Gemini API (`LLM_PROVIDER=gemini`); otherwise it uses Gemini on Vertex AI through its service account (`LLM_PROVIDER=vertex`).
 6. Creates and runs the `inventory-rescue-seed` Cloud Run job to load the demo data.
 
-The service uses `--no-cpu-throttling` and `--min-instances 1`, because the robustness evaluation and forecast refresh run after the HTTP response returns. Later releases can use `gcloud builds submit --config cloudbuild.yaml` (or a trigger on `main`), which builds, pushes and rolls out the new image.
+The service uses `--no-cpu-throttling`, because the robustness evaluation and forecast refresh run after the HTTP response returns. By default it scales to zero when idle (`MIN_INSTANCES=0`, `MAX_INSTANCES=2`) and the database is the smallest Cloud SQL tier (`SQL_TIER=db-f1-micro`), which keeps a demo deployment cheap; set `MIN_INSTANCES=1` to keep one instance warm and `SQL_TIER=db-g1-small` or larger for real load. The project needs billing enabled (the Google Cloud free-trial credit is enough). On Windows, run the script from Git Bash after installing the Google Cloud CLI and running `gcloud auth login`. Later releases can use `gcloud builds submit --config cloudbuild.yaml` (or a trigger on `main`), which builds, pushes and rolls out the new image.
 
 Local container check: `docker build -t inventory-rescue . && docker run -p 8080:8080 -e DATABASE_URL=... inventory-rescue`.
 
