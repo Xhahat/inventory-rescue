@@ -9,7 +9,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from ..adapters import analytics, search
+from ..adapters import activity, analytics, search
 from ..adapters.storage import get_storage
 from ..config import get_settings
 from ..db import get_db
@@ -31,6 +31,20 @@ def _sku_or_404(snap, sku_id: str):
     return snap.products[sku_id]
 
 
+def _inr(x: float) -> str:
+    """Rupees with Indian digit grouping, e.g. 2500000 -> ₹25,00,000."""
+    n = int(round(abs(x)))
+    s = str(n)
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        s = ",".join(([head] if head else []) + groups) + "," + tail
+    return ("-" if x < 0 else "") + "₹" + s
+
+
 # ---------------------------------------------------------------- health / overview
 
 @router.get("/health")
@@ -39,7 +53,13 @@ def health(db: Session = Depends(get_db)):
     s = get_settings()
     return {"status": "ok", "db": db.get_bind().dialect.name, "llm_configured": s.llm_configured,
             "llm_provider": s.resolved_llm_provider if s.llm_configured else None,
-            "llm_model": s.active_llm_model if s.llm_configured else None, "storage": s.storage_backend}
+            "llm_model": s.active_llm_model if s.llm_configured else None, "storage": s.storage_backend,
+            "activity": s.activity_backend}
+
+
+@router.get("/api/activity")
+def activity_feed(limit: int = Query(20, ge=1, le=100)):
+    return activity.recent(limit)
 
 
 @router.get("/api/overview")
@@ -208,9 +228,14 @@ def _ingest(db: Session, text_: str, source: str, storage_key: str | None = None
             status="pending" if reason is None else "invalid", rejection_reason=reason,
         ))
     db.commit()
+    events = list(db.scalars(select(SignalEvent).where(SignalEvent.message_id == msg.id)))
+    found = sum(1 for e in events if e.status == "pending")
+    activity.record("message", f"Message read: {found} signal{'s' if found != 1 else ''} found",
+                    text_.strip().splitlines()[0] if text_.strip() else "", message_id=msg.id, source=source,
+                    method=method, signals=found)
     return {"message_id": msg.id, "extraction_method": method,
             "llm_error": rec.error if method != "llm" else None,
-            "events": [_signal(e) for e in db.scalars(select(SignalEvent).where(SignalEvent.message_id == msg.id))]}
+            "events": [_signal(e) for e in events]}
 
 
 @router.post("/api/messages")
@@ -264,6 +289,9 @@ def _decide(db: Session, signal_id: int, new_status: str, reason: str | None, bg
     if reason:
         e.rejection_reason = reason
     db.commit()
+    activity.record(f"signal_{new_status}", f"EV-{e.id} {new_status}: {e.event_type.replace('_', ' ')}",
+                    (e.quoted_evidence or "")[:200] if new_status == "confirmed" else (reason or ""),
+                    signal_id=e.id, skus=", ".join(e.sku_ids or []))
     job = None
     if new_status == "confirmed" or was_confirmed:
         job = plan_svc.enqueue(db, "reforecast", {"sku_ids": e.sku_ids, "trigger": f"EV-{e.id} {new_status}"})
@@ -349,6 +377,7 @@ async def import_sales(bg: BackgroundTasks, file: UploadFile = File(...), db: Se
     db.commit()
     get_storage().put(f"uploads/sales_{utcnow().strftime('%Y%m%dT%H%M%S%f')}.csv", data)
     skus = sorted({r.sku_id for r in rows})
+    activity.record("import", f"Sales CSV imported: {len(rows)} rows", f"{len(skus)} products", rows=len(rows))
     job = plan_svc.enqueue(db, "reforecast", {"sku_ids": None, "trigger": f"CSV import ({len(rows)} rows)"})
     bg.add_task(plan_svc.run_job, job.id)
     return {"imported": len(rows), "skus": skus, "job": _job(job)}
@@ -367,6 +396,10 @@ def _plan(p: Plan) -> dict:
 def create_plan(body: PlanIn, bg: BackgroundTasks, db: Session = Depends(get_db)):
     p = plan_svc.create_plan(db, body.budget, body.strategy, body.reserve_share)
     bg.add_task(plan_svc.run_job, p.summary["robustness"]["job_id"])
+    s = p.summary
+    activity.record("plan_created", f"Plan #{p.id} built for a {_inr(s['budget'])} budget",
+                    f"Spends {_inr(s['cash_used'])}, keeps {_inr(s['cash_remaining'])}; "
+                    f"{s['n_actions']} actions", plan_id=p.id, budget=s["budget"], cash_used=s["cash_used"])
     return _plan(p)
 
 
@@ -418,7 +451,10 @@ def approve(plan_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "plan not found")
     if p.status == "approved":
         return _plan(p)
-    return _plan(plan_svc.approve_plan(db, p))
+    p = plan_svc.approve_plan(db, p)
+    activity.record("plan_approved", f"Plan #{p.id} approved", f"{_inr(p.summary.get('cash_used', 0))} committed",
+                    plan_id=p.id)
+    return _plan(p)
 
 
 @router.get("/api/plans/{plan_id}/export/{kind}")

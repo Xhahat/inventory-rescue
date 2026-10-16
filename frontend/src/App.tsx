@@ -6,6 +6,7 @@ import InboxPage from './pages/InboxPage';
 import SkuPage from './pages/SkuPage';
 import ScenarioPage from './pages/ScenarioPage';
 import AssistantPage from './pages/AssistantPage';
+import ActivityPage from './pages/ActivityPage';
 import SimpleApp from './simple/SimpleApp';
 
 function readRoute(): string[] {
@@ -28,6 +29,7 @@ const NAV: [string, string][] = [
   ['sku', 'SKU Detail'],
   ['scenario', 'Scenario & Value'],
   ['assistant', 'Assistant'],
+  ['activity', 'Activity'],
 ];
 
 export default function App() {
@@ -76,6 +78,7 @@ function AdvancedApp({ route }: { route: string[] }) {
         {page === 'sku' && <SkuPage key={route[1] ?? ''} skuId={route[1]} />}
         {page === 'scenario' && <ScenarioPage />}
         {page === 'assistant' && <AssistantPage />}
+        {page === 'activity' && <ActivityPage />}
         {!NAV.some(([k]) => k === page) && (
           <p>
             Unknown page. <a href="#/plan">Go to the plan</a>.

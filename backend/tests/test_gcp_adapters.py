@@ -196,3 +196,100 @@ def test_rate_limiter_spaces_calls(monkeypatch):
     assert slept == [2.0, 4.0]
     llm_client._RateLimiter(0).wait()  # unlimited: never sleeps
     assert slept == [2.0, 4.0]
+
+# ---------------------------------------------------------------- Firestore activity journal
+
+class _Doc:
+    def __init__(self, d):
+        self._d = d
+
+    def to_dict(self):
+        return dict(self._d)
+
+
+class _Query:
+    def __init__(self, docs):
+        self.docs, self.calls = docs, []
+
+    def order_by(self, field, direction):
+        self.calls.append(("order_by", field, direction))
+        self.docs = sorted(self.docs, key=lambda d: d[field], reverse=direction == "DESCENDING")
+        return self
+
+    def limit(self, n):
+        self.calls.append(("limit", n))
+        self.docs = self.docs[:n]
+        return self
+
+    def stream(self, timeout=None):
+        return [_Doc(d) for d in self.docs]
+
+
+class _Collection(_Query):
+    def __init__(self):
+        super().__init__([])
+        self.added = []
+
+    def add(self, entry, timeout=None):
+        self.added.append(entry)
+        self.docs.append(entry)
+
+    def order_by(self, field, direction):
+        return _Query(list(self.docs)).order_by(field, direction)
+
+
+class _FsClient:
+    def __init__(self):
+        self.cols: dict[str, _Collection] = {}
+
+    def collection(self, name):
+        return self.cols.setdefault(name, _Collection())
+
+
+def test_firestore_journal_roundtrip():
+    from app.adapters import activity
+
+    fc = _FsClient()
+    j = activity.FirestoreJournal("activity", client=fc)
+    for i in range(3):
+        j.add({"ts": f"2026-10-16T10:00:0{i}", "kind": "message", "title": f"t{i}"})
+    assert [e["title"] for e in j.recent(2)] == ["t2", "t1"]
+    assert len(fc.cols["activity"].added) == 3
+
+
+def test_activity_backend_selection_and_failures_are_contained(monkeypatch, tmp_path):
+    from app.adapters import activity
+
+    monkeypatch.setenv("VAR_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    try:
+        assert activity.get_journal().backend == "local"
+        activity.record("question", "Asked: x", "y" * 1000, method="llm", ignored=[1, 2])
+        item = activity.recent(5)["items"][0]
+        assert item["kind"] == "question" and len(item["detail"]) == 300 and item["data"] == {"method": "llm"}
+        with pytest.raises(ValueError):
+            activity.record("nope", "x")
+
+        fake = activity.FirestoreJournal("activity", client=_FsClient())
+        monkeypatch.setenv("ACTIVITY_BACKEND", "firestore")
+        get_settings.cache_clear()
+        monkeypatch.setattr(activity, "_firestore", lambda *a: fake)
+        activity.record("plan_approved", "Plan #1 approved")
+        assert activity.recent(5) == {"backend": "firestore", "items": [fake.recent(1)[0]]}
+
+        def boom(*a, **k):
+            raise RuntimeError("down")
+
+        monkeypatch.setattr(fake, "add", boom)
+        monkeypatch.setattr(fake, "recent", boom)
+        activity.record("plan_approved", "Plan #2 approved")  # swallowed
+        assert activity.recent(5) == {"backend": "firestore", "items": [], "error": "journal unavailable"}
+    finally:
+        get_settings.cache_clear()
+
+
+def test_inr_grouping():
+    from app.api.routes import _inr
+
+    assert _inr(2_500_000) == "₹25,00,000" and _inr(1_747_080.4) == "₹17,47,080"
+    assert _inr(999) == "₹999" and _inr(-120_000) == "-₹1,20,000" and _inr(0) == "₹0"

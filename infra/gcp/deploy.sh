@@ -12,7 +12,11 @@
 #
 # Creates: required APIs, Artifact Registry repo, runtime service account, Cloud Storage bucket,
 # Cloud SQL for PostgreSQL 16 instance + database + user, Secret Manager secret holding DATABASE_URL,
-# a Secret Manager secret holding the Gemini API key (if given), the Cloud Run service, and a Cloud Run job that seeds the demo data (run once).
+# a Secret Manager secret holding the Gemini API key (if given), a Firestore database (activity journal),
+# the Cloud Run service, a Cloud Run job that seeds the demo data (run once) and, with FIREBASE=1, a Firebase
+# Hosting release in front of the service:
+#
+#   PROJECT_ID=my-project PUBLIC=1 FIREBASE=1 ./infra/gcp/deploy.sh
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID}"
@@ -34,6 +38,7 @@ KEY_SECRET="${KEY_SECRET:-inventory-rescue-gemini-api-key}"
 GCP_LOCATION="${GCP_LOCATION:-global}"
 SEED="${SEED:-1}"
 PUBLIC="${PUBLIC:-0}"
+FIREBASE="${FIREBASE:-0}"                   # 1 = also deploy the frontend to Firebase Hosting (needs PUBLIC=1)
 
 SA="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/app"
@@ -46,7 +51,7 @@ gcloud config set project "$PROJECT_ID" >/dev/null
 say "Enabling APIs"
 gcloud services enable run.googleapis.com sqladmin.googleapis.com aiplatform.googleapis.com \
   artifactregistry.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com \
-  storage.googleapis.com iam.googleapis.com
+  storage.googleapis.com iam.googleapis.com firestore.googleapis.com
 
 say "Artifact Registry: ${REPO}"
 gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1 ||
@@ -55,10 +60,14 @@ gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2
 say "Runtime service account: ${SA}"
 gcloud iam service-accounts describe "$SA" >/dev/null 2>&1 ||
   gcloud iam service-accounts create "$SA_NAME" --display-name "Inventory Rescue (Cloud Run)"
-for role in roles/aiplatform.user roles/cloudsql.client roles/logging.logWriter; do
+for role in roles/aiplatform.user roles/cloudsql.client roles/logging.logWriter roles/datastore.user; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member "serviceAccount:${SA}" --role "$role" \
     --condition None >/dev/null
 done
+
+say "Firestore (Native mode) database for the activity journal"
+gcloud firestore databases describe --database "(default)" >/dev/null 2>&1 ||
+  gcloud firestore databases create --location "$REGION" --type firestore-native
 
 say "Cloud Storage bucket: gs://${BUCKET}"
 gcloud storage buckets describe "gs://${BUCKET}" >/dev/null 2>&1 ||
@@ -118,7 +127,7 @@ fi
 gcloud builds submit --tag "${IMAGE}:${TAG}" .
 
 ENV_VARS="${LLM_ENV},GEMINI_MODEL=${GEMINI_MODEL}"
-ENV_VARS="${ENV_VARS},STORAGE_BACKEND=gcs,GCS_BUCKET=${BUCKET}"
+ENV_VARS="${ENV_VARS},STORAGE_BACKEND=gcs,GCS_BUCKET=${BUCKET},ACTIVITY_BACKEND=firestore"
 
 if [[ "$PUBLIC" == "1" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
 
@@ -142,6 +151,13 @@ fi
 
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')"
 say "Done: ${URL}"
+if [[ "$FIREBASE" == "1" ]]; then
+  # Firebase Hosting serves the built frontend from its CDN and forwards /api/** and /health to the Cloud Run
+  # service (firebase.json). Needs Firebase added to the project once (Firebase console) and Node.js.
+  say "Firebase Hosting: https://${PROJECT_ID}.web.app"
+  (cd frontend && npm ci --no-audit --no-fund && npm run build)
+  npx --yes firebase-tools@15 deploy --only hosting --project "$PROJECT_ID" --non-interactive
+fi
 if [[ "$PUBLIC" != "1" ]]; then
   echo "The service requires IAM auth. Open it locally with:"
   echo "  gcloud run services proxy ${SERVICE} --region ${REGION} --port 8080   # then http://localhost:8080"

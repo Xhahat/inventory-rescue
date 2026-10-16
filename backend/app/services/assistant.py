@@ -167,8 +167,10 @@ def _fallback_answer(reason: str, calls: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# Stray C0 control characters occasionally appear in model output (seen with Gemini).
+# Stray C0 control characters occasionally appear in model output (seen with Gemini), as does a stray leading
+# punctuation mark (".Roasted Makhana ...").
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_LEADING_PUNCT = re.compile(r"^[.,;:]+\s*(?=[A-Za-z0-9*#₹])")
 
 def answer(db: Session, messages: list[dict], llm=None, style: str = "default") -> dict:
     t0 = time.perf_counter()
@@ -224,7 +226,7 @@ def answer(db: Session, messages: list[dict], llm=None, style: str = "default") 
                                   "result_summary": at.summarize(c.name, res), "result": res})
             session.add_tool_results(results)
             continue
-        text = _CONTROL_CHARS.sub("", turn.text or "").strip()
+        text = _LEADING_PUNCT.sub("", _CONTROL_CHARS.sub("", turn.text or "").strip())
         if not text:
             records.append(CallRecord("assistant", h, llm.model, "invalid", "empty answer", ms, None))
             reason = "empty answer"

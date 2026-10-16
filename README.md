@@ -3,7 +3,11 @@
 Inventory Rescue turns unstructured supplier and campaign messages, together with sales history, into a **budget-constrained recovery plan** for a single-warehouse food and nutrition brand. For each SKU it recommends one action: buy, expedite, mark down or defer. It also shows the **simulated value** of the plan against a rule-based reorder-point baseline.
 
 The AI Builder Cup presentation is in
-[`docs/Inventory_Rescue_AI_Builder_Cup.pptx`](docs/Inventory_Rescue_AI_Builder_Cup.pptx).
+[`docs/Inventory_Rescue_AI_Builder_Cup.pptx`](docs/Inventory_Rescue_AI_Builder_Cup.pptx) (PDF:
+[`docs/Inventory_Rescue_AI_Builder_Cup.pdf`](docs/Inventory_Rescue_AI_Builder_Cup.pdf)).
+
+**Live prototype:** https://inventory-rescue-511705.web.app (Firebase Hosting in front of Cloud Run; the Cloud Run
+service is also reachable directly at https://inventory-rescue-200687014303.asia-south1.run.app).
 
 > All values are simulated on a seeded, synthetic dataset with known "truth" demand. They are not
 > measured business results.
@@ -20,7 +24,7 @@ deployment.
 
 | Area | Details |
 |---|---|
-| Simple view (default) | The landing page is built for someone new to computers. It asks one question, "What would you like to do?", and offers three large buttons: **Make my plan**, **Read a message** and **Ask a question**. With the budget, the user picks how to buy: all now, in two steps, keeping money aside, or spending less. If the budget is too small or leaves products short, the plan says so plainly: "₹20 is not enough to buy any stock; the smallest order that helps costs about ₹42,000", lists the products that will still run out, and offers a one-click plan with the amount that covers everything (`summary.budget_guide`). Everything is in plain words: product names instead of codes, "runs out around 2 Nov", "put the old stock on sale at 20% off", and yes/no buttons to confirm what a message said. Assistant answers use a plain-language style (`style: "simple"`) that keeps the same number checks. Each screen has a **← Back** button. The full planner tools below sit behind the **Advanced view** link. |
+| Simple view (default) | A 3D warehouse landing page (three.js) walks through the idea in four scroll steps ("Every box, in plain sight", "Trouble shows up early", "Approve the plan. Boxes start moving", "Loaded. Off it goes"), then asks one question, "What would you like to do?", with three large tiles: **Make my plan**, **Read a message** and **Ask a question**. It is built for someone new to computers. With the budget, the user picks how to buy: all now, in two steps, keeping money aside, or spending less. If the budget is too small or leaves products short, the plan says so plainly: "₹20 is not enough to buy any stock; the smallest order that helps costs about ₹42,000", lists the products that will still run out, and offers a one-click plan with the amount that covers everything (`summary.budget_guide`). Everything is in plain words: product names instead of codes, "runs out around 2 Nov", "put the old stock on sale at 20% off", and yes/no buttons to confirm what a message said. Assistant answers use a plain-language style (`style: "simple"`) that keeps the same number checks. Each screen has a **← Back** button. The full planner tools below sit behind the **Advanced view** link. |
 | Signal inbox | Paste or upload a supplier email or campaign note. The LLM extracts typed events (`supplier_delay`, `demand_spike`, `demand_drop`, `expiry_risk`), each with a verbatim quote as evidence. Every event is validated and must be confirmed by a human before it affects a plan. An **extraction-quality card** scores the same extraction path on a 40-message labelled set. |
 | Forecasts (hybrid) | A statistical base is always computed: Holt-Winters (damped trend, weekly seasonality) or Croston/SBA for intermittent SKUs. p10/p90 come from rolling in-sample errors. Known calendar/context events and confirmed signals are applied as multipliers. About a third of the context feed is **text only** (a competitor recall, a heatwave, a homepage banner, an influencer reel): the statistical forecast treats those as ×1.0, and only the LLM can turn the description into a bounded multiplier. The LLM may only **retune event multipliers within bounds** (plus at most two small extra adjustments, each with a stated driver); it never writes the series. Invalid output means a labelled statistical forecast. |
 | Service level | SKUs in the top 20% by 28-day revenue are **hero** SKUs; each unit short costs a goodwill penalty (15% of price for heroes, 5% for others) in the optimiser. The operator can pin any SKU to hero / standard / auto. Plans report fill rate and hero fill rate. |
@@ -37,6 +41,7 @@ deployment.
 | Scenarios | A free-text "what if" (for example "SUP-04 delays 7 more days" or "budget is cut to 6 lakh") is parsed into a validated spec. The response shows the current plan next to an adapted plan. |
 | Backtest | Rolling-origin forecast backtest: three origins, a 14-day horizon, the top 10 SKUs plus every SKU with a context event in a hold-out window (25 SKUs). It reports pooled WAPE and p10–p90 coverage for seasonal naive, naive + events, statistical and hybrid, overall and on the text-only series. |
 | Approve & export | Approve a plan, then download PO, markdown and action CSVs. Analytics tables can also be exported. |
+| Activity journal | `#/activity`: a shared feed of messages read, signals confirmed or rejected, plans built and approved, sales imports and assistant questions (`GET /api/activity`). Stored in Firestore on Google Cloud so every Cloud Run instance sees the same history; a JSON-lines file locally. A journal failure never blocks the action itself. |
 
 Every LLM call is logged (`/api/llm/calls`) with a status of `ok`, `ok_repaired`, `invalid`, `error` or `unavailable`. The UI shows a badge for whether each output came from a **validated model** or a **labelled fallback**.
 
@@ -133,13 +138,13 @@ All results above use `gemini-3.5-flash-lite` on the Gemini API (AI Studio):
 ## Architecture
 
 ```
-frontend/  React + TypeScript + Vite + Recharts (Simple view: #/ #/s/plan #/s/message #/s/ask; Advanced view: #/plan #/inbox #/sku #/scenario #/assistant)
+frontend/  React + TypeScript + Vite + Recharts + three.js (Simple view: #/ #/s/plan #/s/message #/s/ask; Advanced view: #/plan #/inbox #/sku #/scenario #/assistant #/activity)
 backend/   FastAPI + SQLAlchemy 2 (SQLite locally, PostgreSQL 16 / Cloud SQL on Google Cloud)
   app/api/routes.py        HTTP API (also serves the built frontend when STATIC_DIR exists)
   app/api/assistant_routes.py, eval_routes.py   planning assistant and extraction-evaluation endpoints
   app/llm/                 Gemini clients (AI Studio key or Vertex AI), prompts, JSON-task runner with validation, tool-calling agent
   app/services/            signals, forecasting, simulator, planner, value, rolling re-plan and plan options, scenarios, plans/jobs, assistant tools, extraction eval
-  app/adapters/            storage (local folder or Cloud Storage), search, analytics
+  app/adapters/            storage (local folder or Cloud Storage), activity journal (local file or Firestore), search, analytics
   scripts/seed.py          synthetic data generator and loader
 data/seed/                 generated CSVs and evaluation truth (committed so the demo is reproducible)
 data/messages/             five demo messages
@@ -147,6 +152,7 @@ data/eval/                 labelled inbox messages for the extraction evaluation
 Dockerfile                 multi-stage: builds the frontend, then one FastAPI image for Cloud Run
 cloudbuild.yaml            CI: build, push to Artifact Registry, roll out to Cloud Run
 infra/gcp/deploy.sh        one-shot Google Cloud setup and deploy
+firebase.json              Firebase Hosting: static UI from the CDN, /api/** and /health rewritten to Cloud Run
 ```
 
 Each external service sits behind an adapter selected by configuration:
@@ -156,7 +162,8 @@ Each external service sits behind an adapter selected by configuration:
 | LLM | Gemini API with a Google AI Studio key (`google-genai`, native JSON output, function calling) | Same key from Secret Manager, or Gemini on Vertex AI with the service account |
 | Operational DB | SQLite file `var/inventory_rescue.db` (no server needed; any SQLAlchemy URL works) | Cloud SQL for PostgreSQL 16 (Unix socket; URL kept in Secret Manager) |
 | Files (messages, uploads, exports, forecast cache) | `var/` folder | Cloud Storage bucket |
-| Hosting | uvicorn + Vite | One Cloud Run service (API + UI on the same origin), plus a Cloud Run job for seeding |
+| Activity journal | `var/activity.jsonl` | Firestore (Native mode) collection `activity` |
+| Hosting | uvicorn + Vite | Firebase Hosting (UI from the CDN; `/api/**` rewritten to Cloud Run) in front of one Cloud Run service that also serves the UI on its own URL, plus a Cloud Run job for seeding |
 | Product/supplier search | Substring match | PostgreSQL trigram similarity on Cloud SQL |
 | Analytics | CSV export | CSV exports in Cloud Storage (BigQuery-ready) |
 
@@ -190,6 +197,7 @@ Settings are read from environment variables, or from `.env` / `env/.env` at the
 | `LLM_DISABLED` | `false` | Set to `true` to force the labelled fallbacks everywhere. |
 | `DATABASE_URL` | `sqlite:///var/inventory_rescue.db` | SQLAlchemy URL. Cloud SQL: `postgresql+psycopg://USER:PASS@/DB?host=/cloudsql/PROJECT:REGION:INSTANCE`. |
 | `STORAGE_BACKEND` | `local` | `gcs` stores files in `GCS_BUCKET` (optional `GCS_PREFIX`). |
+| `ACTIVITY_BACKEND` | `local` | `firestore` writes the activity journal to Firestore (`FIRESTORE_DATABASE`, default `(default)`; `FIRESTORE_COLLECTION`, default `activity`; project from `GOOGLE_CLOUD_PROJECT` or Application Default Credentials). |
 | `STATIC_DIR` | `frontend/dist` | Built UI served by FastAPI when present. |
 | `EVAL_WORLDS` / `ROLLING_WORLDS` | `120` / `20` | Monte Carlo worlds for the robustness job. |
 | `OPTION_WORLDS` | `10` | Calm worlds for the plan-options comparison (the same number of shock worlds is added). |
@@ -239,15 +247,17 @@ From the repo root, in Cloud Shell (or any shell with `gcloud` and `openssl`):
 PROJECT_ID=my-project ./infra/gcp/deploy.sh            # IAM-protected service
 PROJECT_ID=my-project PUBLIC=1 ./infra/gcp/deploy.sh   # public demo URL
 GEMINI_API_KEY=... PROJECT_ID=my-project PUBLIC=1 ./infra/gcp/deploy.sh   # use the AI Studio key instead of Vertex AI
+PROJECT_ID=my-project PUBLIC=1 FIREBASE=1 ./infra/gcp/deploy.sh   # also publish the UI on Firebase Hosting
 ```
 
 The script is idempotent. It does the following:
 1. Enables the required APIs.
-2. Creates an Artifact Registry repo, a runtime service account (Vertex AI user, Cloud SQL client) and a private Cloud Storage bucket.
+2. Creates an Artifact Registry repo, a runtime service account (Vertex AI user, Cloud SQL client, Firestore user), a private Cloud Storage bucket and a Firestore (Native mode) database.
 3. Creates a Cloud SQL PostgreSQL 16 instance, database and user. The generated `DATABASE_URL` goes into Secret Manager.
 4. Gives the default Cloud Build service account the Cloud Build builder role (needed where the organization disables automatic grants to default service accounts), then builds the image with Cloud Build. `.gcloudignore` keeps secrets, local data and dependencies out of the upload.
-5. Deploys the Cloud Run service (region `asia-south1` by default) with `STORAGE_BACKEND=gcs`. With `GEMINI_API_KEY` set, the key goes into Secret Manager and the service uses the Gemini API (`LLM_PROVIDER=gemini`); otherwise it uses Gemini on Vertex AI through its service account (`LLM_PROVIDER=vertex`).
+5. Deploys the Cloud Run service (region `asia-south1` by default) with `STORAGE_BACKEND=gcs` and `ACTIVITY_BACKEND=firestore`. With `GEMINI_API_KEY` set, the key goes into Secret Manager and the service uses the Gemini API (`LLM_PROVIDER=gemini`); otherwise it uses Gemini on Vertex AI through its service account (`LLM_PROVIDER=vertex`).
 6. Creates and runs the `inventory-rescue-seed` Cloud Run job to load the demo data.
+7. With `FIREBASE=1`, builds the frontend and deploys it to Firebase Hosting (`https://PROJECT_ID.web.app`). `firebase.json` rewrites `/api/**` and `/health` to the Cloud Run service, so the browser talks to one origin. Firebase must be added to the Google Cloud project once in the [Firebase console](https://console.firebase.google.com/) ("Add Firebase to Google Cloud project"), and `npx firebase-tools` needs a login (`firebase login`) or Application Default Credentials.
 
 The service uses `--no-cpu-throttling`, because the robustness evaluation and forecast refresh run after the HTTP response returns. By default it scales to zero when idle (`MIN_INSTANCES=0`, `MAX_INSTANCES=2`) and the database is the smallest Cloud SQL tier (`SQL_TIER=db-f1-micro`), which keeps a demo deployment cheap; set `MIN_INSTANCES=1` to keep one instance warm and `SQL_TIER=db-g1-small` or larger for real load. The project needs billing enabled (the Google Cloud free-trial credit is enough). On Windows, run the script from Git Bash after installing the Google Cloud CLI and running `gcloud auth login`. Later releases can use `gcloud builds submit --config cloudbuild.yaml` (or a trigger on `main`), which builds, pushes and rolls out the new image.
 

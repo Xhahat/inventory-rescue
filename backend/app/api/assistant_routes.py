@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ..adapters import activity
 from ..db import get_db
 from ..services import assistant
 
@@ -27,6 +28,10 @@ class AssistantIn(BaseModel):
 @router.post("/api/assistant")
 def ask_assistant(body: AssistantIn, db: Session = Depends(get_db)):
     try:
-        return assistant.answer(db, [m.model_dump() for m in body.messages], style=body.style)
+        out = assistant.answer(db, [m.model_dump() for m in body.messages], style=body.style)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    question = next((m.content for m in reversed(body.messages) if m.role == "user"), "")
+    activity.record("question", f"Asked: {question.strip()[:160]}", str(out.get("answer", ""))[:240],
+                    method=out.get("method"), tools=len(out.get("tool_calls") or []))
+    return out

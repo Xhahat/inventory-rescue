@@ -16,7 +16,14 @@ export type Overview = {
   pending_signals: number; alerts: Alert[]; active_jobs: Job[]; llm_configured: boolean;
 };
 
-export type Health = { status: string; db: string; llm_configured: boolean; llm_model: string | null };
+export type Health = {
+  status: string; db: string; llm_configured: boolean; llm_model: string | null; storage?: string; activity?: string;
+};
+
+export type ActivityItem = {
+  ts: string; kind: string; title: string; detail: string; data: Record<string, string | number | boolean | null>;
+};
+export type ActivityFeed = { backend: string; items: ActivityItem[]; error?: string };
 
 export type PlanAction = {
   id: string; rank: number; sku_id: string; sku_name: string; category: string; supplier_id: string;
@@ -258,6 +265,7 @@ export const api = {
   reject: (id: number, reason?: string) =>
     post<{ signal: Signal; job: Job | null }>(`/api/signals/${id}/reject`, { reason: reason ?? null }),
   jobs: () => req<Job[]>('/api/jobs'),
+  activity: (limit = 30) => req<ActivityFeed>(`/api/activity?limit=${limit}`),
   job: (id: number) => req<Job>(`/api/jobs/${id}`),
   refreshForecasts: (sku_ids: string[] | null, force = false) => post<Job>('/api/forecasts/refresh', { sku_ids, force }),
   latestPlan: async (): Promise<Plan | null> => {

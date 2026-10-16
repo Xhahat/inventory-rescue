@@ -195,6 +195,8 @@ def test_answer_strips_control_characters(db):
     llm = ScriptedLLM([ModelTurn("\x19No plan yet.\x00\nAsk again\tlater.")])
     out = assistant.answer(db, _ask("hello"), llm=llm)
     assert out["method"] == "llm" and out["answer"] == "No plan yet.\nAsk again\tlater."
+    out = assistant.answer(db, _ask("hello"), llm=ScriptedLLM([ModelTurn(".No plan yet.")]))
+    assert out["answer"] == "No plan yet."
 
 
 def test_simple_style_adds_plain_language_instructions(db, client):

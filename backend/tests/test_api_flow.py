@@ -94,6 +94,13 @@ def test_full_flow_with_fake_llm(client, fake_llm):
     calls = client.get("/api/llm/calls").json()
     assert {c["status"] for c in calls} >= {"ok", "invalid"}
 
+    feed = client.get("/api/activity?limit=10").json()
+    assert feed["backend"] == "local"
+    kinds = [i["kind"] for i in feed["items"]]
+    assert kinds[0] == "plan_approved" and {"plan_created", "signal_confirmed", "message"} <= set(kinds)
+    assert feed["items"][0]["data"]["plan_id"] == plan["id"]
+    assert feed["items"][0]["ts"] >= feed["items"][-1]["ts"]
+
 
 def test_reject_signal_and_heuristic_path_without_llm(client):
     text = (ROOT_DIR / "data" / "messages" / "01_supplier_delay.txt").read_text(encoding="utf-8")
@@ -103,6 +110,8 @@ def test_reject_signal_and_heuristic_path_without_llm(client):
     assert ev["event_type"] == "supplier_delay" and ev["magnitude"] == 9
     r = client.post(f"/api/signals/{ev['id']}/reject", json={"reason": "already known"}).json()
     assert r["signal"]["status"] == "rejected" and r["job"] is None
+    top = client.get("/api/activity?limit=1").json()["items"][0]
+    assert top["kind"] == "signal_rejected" and top["detail"] == "already known"
 
 
 def test_scenario_and_backtest(client):

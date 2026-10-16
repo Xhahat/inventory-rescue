@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     storage_backend: str = "local"
     gcs_bucket: str | None = None
     gcs_prefix: str = ""
+    # Activity journal: "local" (var_dir/activity.jsonl) or "firestore" (Firestore collection, shared by instances).
+    activity_backend: str = "local"
+    firestore_database: str = "(default)"
+    firestore_collection: str = "activity"
     # Built frontend served by FastAPI (single Cloud Run service). Ignored when the folder does not exist.
     static_dir: str = str(ROOT_DIR / "frontend" / "dist")
 
