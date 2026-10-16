@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { askAssistant } from '../api_assistant';
 import type { ChatMessage } from '../api_assistant';
 import { Markdown } from '../pages/AssistantPage';
-import { Back, Problem, Working } from './parts';
+import { Hero, Problem, Working } from './parts';
 import { tidyAnswer } from './plain';
 
 const STORE_KEY = 'simple.ask.v1';
@@ -63,8 +63,8 @@ export default function AskScreen() {
 
   return (
     <div className="s-screen">
-      <Back />
-      <h1>Ask a question</h1>
+      <Hero icon="chat" title="Ask a question" sub="Ask in your own words, like “What will run out first?”" />
+      <div className="s-sheet">
       <Problem error={error} />
 
       {chat.length === 0 && (
@@ -121,6 +121,7 @@ export default function AskScreen() {
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

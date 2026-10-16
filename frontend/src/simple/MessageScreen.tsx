@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, waitForJob } from '../api';
 import type { Signal } from '../api';
-import { Back, Problem, Working } from './parts';
+import { Hero, Problem, Working } from './parts';
 import { Icon } from './icons';
 import { signalSentence } from './plain';
 
@@ -133,8 +133,8 @@ export default function MessageScreen() {
 
   return (
     <div className="s-screen">
-      <Back />
-      <h1>Read a message</h1>
+      <Hero icon="mail" title="Read a message" sub="Paste a note from a supplier or your sales team." />
+      <div className="s-sheet">
       <Problem error={error} />
 
       {found === null ? (
@@ -229,6 +229,7 @@ export default function MessageScreen() {
           </a>
         </div>
       )}
+      </div>
     </div>
   );
 }

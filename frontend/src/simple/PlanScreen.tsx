@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Overview, Plan, Strategy } from '../api';
-import { Back, Problem, Working } from './parts';
+import { Hero, Problem, Working } from './parts';
 import { Icon } from './icons';
 import { actionSteps, actionWhy, day, kindIcon, rupees } from './plain';
 
@@ -127,8 +127,8 @@ export default function PlanScreen() {
 
   return (
     <div className="s-screen">
-      <Back />
-      <h1>Make my plan</h1>
+      <Hero icon="cart" title="Make my plan" sub="Tell us your budget. We'll say what to buy and what to put on sale." />
+      <div className="s-sheet">
       <Problem error={error} />
 
       {overview && overview.pending_signals > 0 && (
@@ -392,6 +392,7 @@ export default function PlanScreen() {
           </p>
         </section>
       )}
+      </div>
     </div>
   );
 }
