@@ -9,6 +9,8 @@ The AI Builder Cup presentation is in
 **Live prototype:** https://inventory-rescue-511705.web.app (Firebase Hosting in front of Cloud Run; the Cloud Run
 service is also reachable directly at https://inventory-rescue-200687014303.asia-south1.run.app).
 
+**Demo video (3:28):** https://drive.google.com/file/d/1hqANKrCaGkMQFxnXu5LMdp8DBv_WMhHt/view
+
 > All values are simulated on a seeded, synthetic dataset with known "truth" demand. They are not
 > measured business results.
 
